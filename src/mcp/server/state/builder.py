@@ -163,7 +163,6 @@ class _InternalStateMachineBuilder:
         """Build a global machine (single current state for the process)."""
         self._validate()
         initial = self._initial or next(iter(self._states))
-        # Übergabe der zentralen Kollektive an die Runtime (Q, Σ, δ).
         return StateMachine(
             initial_state=initial,
             states=self._states,

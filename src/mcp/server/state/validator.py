@@ -196,8 +196,6 @@ class StateMachineValidator:
             if self.resource_manager is None:
                 raise ValueError("No resource manager provided.")
             resources: List[Resource] = self.resource_manager.list_resources()
-            # Annahme: sym.ident entspricht der Manager-Identifikation (z. B. r.name oder str(r.uri))
-            # Bewusst konservativ: verwenden str(r.uri) wie bisher.
             resource_idents = {str(r.uri) for r in resources}
             for missing in sorted(resource_refs - resource_idents):
                 self.issues.append(ValidationIssue("error", f"Referenced resource '{missing}' is not registered."))
