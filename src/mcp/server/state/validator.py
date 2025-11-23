@@ -353,7 +353,7 @@ class StateMachineValidator:
             )
 
     # ----------------------------
-    # helpers (kept minimal)
+    # helpers
     # ----------------------------
     @staticmethod
     def _is_symbol_available(sym: InputSymbol, available: Dict[str, Set[str]]) -> bool:

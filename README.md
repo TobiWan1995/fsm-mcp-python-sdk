@@ -8,8 +8,8 @@
 [![MIT licensed][mit-badge]][mit-url]
 [![Python Version][python-badge]][python-url]
 [![Documentation][docs-badge]][docs-url]
+[![Protocol][protocol-badge]][protocol-url]
 [![Specification][spec-badge]][spec-url]
-[![GitHub Discussions][discussions-badge]][discussions-url]
 
 </div>
 
@@ -31,22 +31,33 @@
     - [Prompts](#prompts)
     - [Images](#images)
     - [Context](#context)
+      - [Getting Context in Functions](#getting-context-in-functions)
+      - [Context Properties and Methods](#context-properties-and-methods)
     - [Completions](#completions)
     - [Elicitation](#elicitation)
     - [Sampling](#sampling)
     - [Logging and Notifications](#logging-and-notifications)
     - [Authentication](#authentication)
     - [FastMCP Properties](#fastmcp-properties)
-    - [Session Properties](#session-properties-and-methods)
+    - [Session Properties and Methods](#session-properties-and-methods)
     - [Request Context Properties](#request-context-properties)
   - [Running Your Server](#running-your-server)
     - [Development Mode](#development-mode)
     - [Claude Desktop Integration](#claude-desktop-integration)
     - [Direct Execution](#direct-execution)
     - [Streamable HTTP Transport](#streamable-http-transport)
+      - [CORS Configuration for Browser-Based Clients](#cors-configuration-for-browser-based-clients)
     - [Mounting to an Existing ASGI Server](#mounting-to-an-existing-asgi-server)
+      - [StreamableHTTP servers](#streamablehttp-servers)
+        - [Basic mounting](#basic-mounting)
+        - [Host-based routing](#host-based-routing)
+        - [Multiple servers with path configuration](#multiple-servers-with-path-configuration)
+        - [Path configuration at initialization](#path-configuration-at-initialization)
+      - [SSE servers](#sse-servers)
   - [Advanced Usage](#advanced-usage)
     - [Low-Level Server](#low-level-server)
+      - [Structured Output Support](#structured-output-support)
+    - [Pagination (Advanced)](#pagination-advanced)
     - [Writing MCP Clients](#writing-mcp-clients)
     - [Client Display Utilities](#client-display-utilities)
     - [OAuth Authentication for Clients](#oauth-authentication-for-clients)
@@ -63,12 +74,12 @@
 [mit-url]: https://github.com/modelcontextprotocol/python-sdk/blob/main/LICENSE
 [python-badge]: https://img.shields.io/pypi/pyversions/mcp.svg
 [python-url]: https://www.python.org/downloads/
-[docs-badge]: https://img.shields.io/badge/docs-modelcontextprotocol.io-blue.svg
-[docs-url]: https://modelcontextprotocol.io
+[docs-badge]: https://img.shields.io/badge/docs-python--sdk-blue.svg
+[docs-url]: https://modelcontextprotocol.github.io/python-sdk/
+[protocol-badge]: https://img.shields.io/badge/protocol-modelcontextprotocol.io-blue.svg
+[protocol-url]: https://modelcontextprotocol.io
 [spec-badge]: https://img.shields.io/badge/spec-spec.modelcontextprotocol.io-blue.svg
-[spec-url]: https://spec.modelcontextprotocol.io
-[discussions-badge]: https://img.shields.io/github/discussions/modelcontextprotocol/python-sdk
-[discussions-url]: https://github.com/modelcontextprotocol/python-sdk/discussions
+[spec-url]: https://modelcontextprotocol.io/specification/latest
 
 ## Overview
 
@@ -121,14 +132,14 @@ Let's create a simple MCP server that exposes a calculator tool and some data:
 """
 FastMCP quickstart example.
 
-cd to the `examples/snippets/clients` directory and run:
-    uv run server fastmcp_quickstart stdio
+Run from the repository root:
+    uv run examples/snippets/servers/fastmcp_quickstart.py
 """
 
 from mcp.server.fastmcp import FastMCP
 
 # Create an MCP server
-mcp = FastMCP("Demo")
+mcp = FastMCP("Demo", json_response=True)
 
 
 # Add an addition tool
@@ -156,22 +167,35 @@ def greet_user(name: str, style: str = "friendly") -> str:
     }
 
     return f"{styles.get(style, styles['friendly'])} for someone named {name}."
+
+
+# Run with streamable HTTP transport
+if __name__ == "__main__":
+    mcp.run(transport="streamable-http")
 ```
 
 _Full example: [examples/snippets/servers/fastmcp_quickstart.py](https://github.com/modelcontextprotocol/python-sdk/blob/main/examples/snippets/servers/fastmcp_quickstart.py)_
 <!-- /snippet-source -->
 
-You can install this server in [Claude Desktop](https://claude.ai/download) and interact with it right away by running:
+You can install this server in [Claude Code](https://docs.claude.com/en/docs/claude-code/mcp) and interact with it right away. First, run the server:
 
 ```bash
-uv run mcp install server.py
+uv run --with mcp examples/snippets/servers/fastmcp_quickstart.py
 ```
 
-Alternatively, you can test it with the MCP Inspector:
+Then add it to Claude Code:
 
 ```bash
-uv run mcp dev server.py
+claude mcp add --transport http my-server http://localhost:8000/mcp
 ```
+
+Alternatively, you can test it with the MCP Inspector. Start the server as above, then in a separate terminal:
+
+```bash
+npx -y @modelcontextprotocol/inspector
+```
+
+In the inspector UI, connect to `http://localhost:8000/mcp`.
 
 ## What is MCP?
 
@@ -372,6 +396,61 @@ causes the tool to be classified as structured _and this is undesirable_,
 the  classification can be suppressed by passing `structured_output=False`
 to the `@tool` decorator.
 
+##### Advanced: Direct CallToolResult
+
+For full control over tool responses including the `_meta` field (for passing data to client applications without exposing it to the model), you can return `CallToolResult` directly:
+
+<!-- snippet-source examples/snippets/servers/direct_call_tool_result.py -->
+```python
+"""Example showing direct CallToolResult return for advanced control."""
+
+from typing import Annotated
+
+from pydantic import BaseModel
+
+from mcp.server.fastmcp import FastMCP
+from mcp.types import CallToolResult, TextContent
+
+mcp = FastMCP("CallToolResult Example")
+
+
+class ValidationModel(BaseModel):
+    """Model for validating structured output."""
+
+    status: str
+    data: dict[str, int]
+
+
+@mcp.tool()
+def advanced_tool() -> CallToolResult:
+    """Return CallToolResult directly for full control including _meta field."""
+    return CallToolResult(
+        content=[TextContent(type="text", text="Response visible to the model")],
+        _meta={"hidden": "data for client applications only"},
+    )
+
+
+@mcp.tool()
+def validated_tool() -> Annotated[CallToolResult, ValidationModel]:
+    """Return CallToolResult with structured output validation."""
+    return CallToolResult(
+        content=[TextContent(type="text", text="Validated response")],
+        structuredContent={"status": "success", "data": {"result": 42}},
+        _meta={"internal": "metadata"},
+    )
+
+
+@mcp.tool()
+def empty_result_tool() -> CallToolResult:
+    """For empty results, return CallToolResult with empty content."""
+    return CallToolResult(content=[])
+```
+
+_Full example: [examples/snippets/servers/direct_call_tool_result.py](https://github.com/modelcontextprotocol/python-sdk/blob/main/examples/snippets/servers/direct_call_tool_result.py)_
+<!-- /snippet-source -->
+
+**Important:** `CallToolResult` must always be returned (no `Optional` or `Union`). For empty results, use `CallToolResult(content=[])`. For optional simple types, use `str | None` without `CallToolResult`.
+
 <!-- snippet-source examples/snippets/servers/structured_output.py -->
 ```python
 """Example showing structured output with tools."""
@@ -400,7 +479,7 @@ def get_weather(city: str) -> WeatherData:
     """Get weather for a city - returns structured data."""
     # Simulated weather data
     return WeatherData(
-        temperature=72.5,
+        temperature=22.5,
         humidity=45.0,
         condition="sunny",
         wind_speed=5.2,
@@ -504,6 +583,41 @@ def debug_error(error: str) -> list[base.Message]:
 
 _Full example: [examples/snippets/servers/basic_prompt.py](https://github.com/modelcontextprotocol/python-sdk/blob/main/examples/snippets/servers/basic_prompt.py)_
 <!-- /snippet-source -->
+
+### Icons
+
+MCP servers can provide icons for UI display. Icons can be added to the server implementation, tools, resources, and prompts:
+
+```python
+from mcp.server.fastmcp import FastMCP, Icon
+
+# Create an icon from a file path or URL
+icon = Icon(
+    src="icon.png",
+    mimeType="image/png",
+    sizes="64x64"
+)
+
+# Add icons to server
+mcp = FastMCP(
+    "My Server",
+    website_url="https://example.com",
+    icons=[icon]
+)
+
+# Add icons to tools, resources, and prompts
+@mcp.tool(icons=[icon])
+def my_tool():
+    """Tool with an icon."""
+    return "result"
+
+@mcp.resource("demo://resource", icons=[icon])
+def my_resource():
+    """Resource with an icon."""
+    return "content"
+```
+
+_Full example: [examples/fastmcp/icons_demo.py](https://github.com/modelcontextprotocol/python-sdk/blob/main/examples/fastmcp/icons_demo.py)_
 
 ### Images
 
@@ -736,6 +850,8 @@ async def book_table(date: str, time: str, party_size: int, ctx: Context[ServerS
 _Full example: [examples/snippets/servers/elicitation.py](https://github.com/modelcontextprotocol/python-sdk/blob/main/examples/snippets/servers/elicitation.py)_
 <!-- /snippet-source -->
 
+Elicitation schemas support default values for all field types. Default values are automatically included in the JSON schema sent to clients, allowing them to pre-populate forms.
+
 The `elicit()` method returns an `ElicitationResult` with:
 
 - `action`: "accept", "decline", or "cancel"
@@ -770,8 +886,8 @@ async def generate_poem(topic: str, ctx: Context[ServerSession, None]) -> str:
         max_tokens=100,
     )
 
-    if result.content.type == "text":
-        return result.content.text
+    if all(c.type == "text" for c in result.content_as_list):
+        return "\n".join(c.text for c in result.content_as_list if c.type == "text")
     return str(result.content)
 ```
 
@@ -840,6 +956,7 @@ class SimpleTokenVerifier(TokenVerifier):
 # Create FastMCP instance as a Resource Server
 mcp = FastMCP(
     "Weather Service",
+    json_response=True,
     # Token verifier for authentication
     token_verifier=SimpleTokenVerifier(),
     # Auth settings for RFC 9728 Protected Resource Metadata
@@ -885,6 +1002,8 @@ The FastMCP server instance accessible via `ctx.fastmcp` provides access to serv
 
 - `ctx.fastmcp.name` - The server's name as defined during initialization
 - `ctx.fastmcp.instructions` - Server instructions/description provided to clients
+- `ctx.fastmcp.website_url` - Optional website URL for the server
+- `ctx.fastmcp.icons` - Optional list of icons for UI display
 - `ctx.fastmcp.settings` - Complete server configuration object containing:
   - `debug` - Debug mode flag
   - `log_level` - Current logging level
@@ -1053,7 +1172,7 @@ Note that `uv run mcp run` or `uv run mcp dev` only supports server using FastMC
 
 ### Streamable HTTP Transport
 
-> **Note**: Streamable HTTP transport is superseding SSE transport for production deployments.
+> **Note**: Streamable HTTP transport is the recommended transport for production deployments. Use `stateless_http=True` and `json_response=True` for optimal scalability.
 
 <!-- snippet-source examples/snippets/servers/streamable_config.py -->
 ```python
@@ -1064,15 +1183,15 @@ Run from the repository root:
 
 from mcp.server.fastmcp import FastMCP
 
-# Stateful server (maintains session state)
-mcp = FastMCP("StatefulServer")
+# Stateless server with JSON responses (recommended)
+mcp = FastMCP("StatelessServer", stateless_http=True, json_response=True)
 
 # Other configuration options:
-# Stateless server (no session persistence)
+# Stateless server with SSE streaming responses
 # mcp = FastMCP("StatelessServer", stateless_http=True)
 
-# Stateless server (no session persistence, no sse stream with supported client)
-# mcp = FastMCP("StatelessServer", stateless_http=True, json_response=True)
+# Stateful server with session persistence
+# mcp = FastMCP("StatefulServer")
 
 
 # Add a simple tool to demonstrate the server
@@ -1107,7 +1226,7 @@ from starlette.routing import Mount
 from mcp.server.fastmcp import FastMCP
 
 # Create the Echo server
-echo_mcp = FastMCP(name="EchoServer", stateless_http=True)
+echo_mcp = FastMCP(name="EchoServer", stateless_http=True, json_response=True)
 
 
 @echo_mcp.tool()
@@ -1117,7 +1236,7 @@ def echo(message: str) -> str:
 
 
 # Create the Math server
-math_mcp = FastMCP(name="MathServer", stateless_http=True)
+math_mcp = FastMCP(name="MathServer", stateless_http=True, json_response=True)
 
 
 @math_mcp.tool()
@@ -1143,6 +1262,11 @@ app = Starlette(
     ],
     lifespan=lifespan,
 )
+
+# Note: Clients connect to http://localhost:8000/echo/mcp and http://localhost:8000/math/mcp
+# To mount at the root of each path (e.g., /echo instead of /echo/mcp):
+# echo_mcp.settings.streamable_http_path = "/"
+# math_mcp.settings.streamable_http_path = "/"
 ```
 
 _Full example: [examples/snippets/servers/streamable_starlette_mount.py](https://github.com/modelcontextprotocol/python-sdk/blob/main/examples/snippets/servers/streamable_starlette_mount.py)_
@@ -1160,11 +1284,207 @@ The streamable HTTP transport supports:
 - JSON or SSE response formats
 - Better scalability for multi-node deployments
 
+#### CORS Configuration for Browser-Based Clients
+
+If you'd like your server to be accessible by browser-based MCP clients, you'll need to configure CORS headers. The `Mcp-Session-Id` header must be exposed for browser clients to access it:
+
+```python
+from starlette.applications import Starlette
+from starlette.middleware.cors import CORSMiddleware
+
+# Create your Starlette app first
+starlette_app = Starlette(routes=[...])
+
+# Then wrap it with CORS middleware
+starlette_app = CORSMiddleware(
+    starlette_app,
+    allow_origins=["*"],  # Configure appropriately for production
+    allow_methods=["GET", "POST", "DELETE"],  # MCP streamable HTTP methods
+    expose_headers=["Mcp-Session-Id"],
+)
+```
+
+This configuration is necessary because:
+
+- The MCP streamable HTTP transport uses the `Mcp-Session-Id` header for session management
+- Browsers restrict access to response headers unless explicitly exposed via CORS
+- Without this configuration, browser-based clients won't be able to read the session ID from initialization responses
+
 ### Mounting to an Existing ASGI Server
 
 By default, SSE servers are mounted at `/sse` and Streamable HTTP servers are mounted at `/mcp`. You can customize these paths using the methods described below.
 
 For more information on mounting applications in Starlette, see the [Starlette documentation](https://www.starlette.io/routing/#submounting-routes).
+
+#### StreamableHTTP servers
+
+You can mount the StreamableHTTP server to an existing ASGI server using the `streamable_http_app` method. This allows you to integrate the StreamableHTTP server with other ASGI applications.
+
+##### Basic mounting
+
+<!-- snippet-source examples/snippets/servers/streamable_http_basic_mounting.py -->
+```python
+"""
+Basic example showing how to mount StreamableHTTP server in Starlette.
+
+Run from the repository root:
+    uvicorn examples.snippets.servers.streamable_http_basic_mounting:app --reload
+"""
+
+from starlette.applications import Starlette
+from starlette.routing import Mount
+
+from mcp.server.fastmcp import FastMCP
+
+# Create MCP server
+mcp = FastMCP("My App", json_response=True)
+
+
+@mcp.tool()
+def hello() -> str:
+    """A simple hello tool"""
+    return "Hello from MCP!"
+
+
+# Mount the StreamableHTTP server to the existing ASGI server
+app = Starlette(
+    routes=[
+        Mount("/", app=mcp.streamable_http_app()),
+    ]
+)
+```
+
+_Full example: [examples/snippets/servers/streamable_http_basic_mounting.py](https://github.com/modelcontextprotocol/python-sdk/blob/main/examples/snippets/servers/streamable_http_basic_mounting.py)_
+<!-- /snippet-source -->
+
+##### Host-based routing
+
+<!-- snippet-source examples/snippets/servers/streamable_http_host_mounting.py -->
+```python
+"""
+Example showing how to mount StreamableHTTP server using Host-based routing.
+
+Run from the repository root:
+    uvicorn examples.snippets.servers.streamable_http_host_mounting:app --reload
+"""
+
+from starlette.applications import Starlette
+from starlette.routing import Host
+
+from mcp.server.fastmcp import FastMCP
+
+# Create MCP server
+mcp = FastMCP("MCP Host App", json_response=True)
+
+
+@mcp.tool()
+def domain_info() -> str:
+    """Get domain-specific information"""
+    return "This is served from mcp.acme.corp"
+
+
+# Mount using Host-based routing
+app = Starlette(
+    routes=[
+        Host("mcp.acme.corp", app=mcp.streamable_http_app()),
+    ]
+)
+```
+
+_Full example: [examples/snippets/servers/streamable_http_host_mounting.py](https://github.com/modelcontextprotocol/python-sdk/blob/main/examples/snippets/servers/streamable_http_host_mounting.py)_
+<!-- /snippet-source -->
+
+##### Multiple servers with path configuration
+
+<!-- snippet-source examples/snippets/servers/streamable_http_multiple_servers.py -->
+```python
+"""
+Example showing how to mount multiple StreamableHTTP servers with path configuration.
+
+Run from the repository root:
+    uvicorn examples.snippets.servers.streamable_http_multiple_servers:app --reload
+"""
+
+from starlette.applications import Starlette
+from starlette.routing import Mount
+
+from mcp.server.fastmcp import FastMCP
+
+# Create multiple MCP servers
+api_mcp = FastMCP("API Server", json_response=True)
+chat_mcp = FastMCP("Chat Server", json_response=True)
+
+
+@api_mcp.tool()
+def api_status() -> str:
+    """Get API status"""
+    return "API is running"
+
+
+@chat_mcp.tool()
+def send_message(message: str) -> str:
+    """Send a chat message"""
+    return f"Message sent: {message}"
+
+
+# Configure servers to mount at the root of each path
+# This means endpoints will be at /api and /chat instead of /api/mcp and /chat/mcp
+api_mcp.settings.streamable_http_path = "/"
+chat_mcp.settings.streamable_http_path = "/"
+
+# Mount the servers
+app = Starlette(
+    routes=[
+        Mount("/api", app=api_mcp.streamable_http_app()),
+        Mount("/chat", app=chat_mcp.streamable_http_app()),
+    ]
+)
+```
+
+_Full example: [examples/snippets/servers/streamable_http_multiple_servers.py](https://github.com/modelcontextprotocol/python-sdk/blob/main/examples/snippets/servers/streamable_http_multiple_servers.py)_
+<!-- /snippet-source -->
+
+##### Path configuration at initialization
+
+<!-- snippet-source examples/snippets/servers/streamable_http_path_config.py -->
+```python
+"""
+Example showing path configuration during FastMCP initialization.
+
+Run from the repository root:
+    uvicorn examples.snippets.servers.streamable_http_path_config:app --reload
+"""
+
+from starlette.applications import Starlette
+from starlette.routing import Mount
+
+from mcp.server.fastmcp import FastMCP
+
+# Configure streamable_http_path during initialization
+# This server will mount at the root of wherever it's mounted
+mcp_at_root = FastMCP(
+    "My Server",
+    json_response=True,
+    streamable_http_path="/",
+)
+
+
+@mcp_at_root.tool()
+def process_data(data: str) -> str:
+    """Process some data"""
+    return f"Processed: {data}"
+
+
+# Mount at /process - endpoints will be at /process instead of /process/mcp
+app = Starlette(
+    routes=[
+        Mount("/process", app=mcp_at_root.streamable_http_app()),
+    ]
+)
+```
+
+_Full example: [examples/snippets/servers/streamable_http_path_config.py](https://github.com/modelcontextprotocol/python-sdk/blob/main/examples/snippets/servers/streamable_http_path_config.py)_
+<!-- /snippet-source -->
 
 #### SSE servers
 
@@ -1522,13 +1842,202 @@ if __name__ == "__main__":
 _Full example: [examples/snippets/servers/lowlevel/structured_output.py](https://github.com/modelcontextprotocol/python-sdk/blob/main/examples/snippets/servers/lowlevel/structured_output.py)_
 <!-- /snippet-source -->
 
-Tools can return data in three ways:
+Tools can return data in four ways:
 
 1. **Content only**: Return a list of content blocks (default behavior before spec revision 2025-06-18)
 2. **Structured data only**: Return a dictionary that will be serialized to JSON (Introduced in spec revision 2025-06-18)
 3. **Both**: Return a tuple of (content, structured_data) preferred option to use for backwards compatibility
+4. **Direct CallToolResult**: Return `CallToolResult` directly for full control (including `_meta` field)
 
 When an `outputSchema` is defined, the server automatically validates the structured output against the schema. This ensures type safety and helps catch errors early.
+
+##### Returning CallToolResult Directly
+
+For full control over the response including the `_meta` field (for passing data to client applications without exposing it to the model), return `CallToolResult` directly:
+
+<!-- snippet-source examples/snippets/servers/lowlevel/direct_call_tool_result.py -->
+```python
+"""
+Run from the repository root:
+    uv run examples/snippets/servers/lowlevel/direct_call_tool_result.py
+"""
+
+import asyncio
+from typing import Any
+
+import mcp.server.stdio
+import mcp.types as types
+from mcp.server.lowlevel import NotificationOptions, Server
+from mcp.server.models import InitializationOptions
+
+server = Server("example-server")
+
+
+@server.list_tools()
+async def list_tools() -> list[types.Tool]:
+    """List available tools."""
+    return [
+        types.Tool(
+            name="advanced_tool",
+            description="Tool with full control including _meta field",
+            inputSchema={
+                "type": "object",
+                "properties": {"message": {"type": "string"}},
+                "required": ["message"],
+            },
+        )
+    ]
+
+
+@server.call_tool()
+async def handle_call_tool(name: str, arguments: dict[str, Any]) -> types.CallToolResult:
+    """Handle tool calls by returning CallToolResult directly."""
+    if name == "advanced_tool":
+        message = str(arguments.get("message", ""))
+        return types.CallToolResult(
+            content=[types.TextContent(type="text", text=f"Processed: {message}")],
+            structuredContent={"result": "success", "message": message},
+            _meta={"hidden": "data for client applications only"},
+        )
+
+    raise ValueError(f"Unknown tool: {name}")
+
+
+async def run():
+    """Run the server."""
+    async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
+        await server.run(
+            read_stream,
+            write_stream,
+            InitializationOptions(
+                server_name="example",
+                server_version="0.1.0",
+                capabilities=server.get_capabilities(
+                    notification_options=NotificationOptions(),
+                    experimental_capabilities={},
+                ),
+            ),
+        )
+
+
+if __name__ == "__main__":
+    asyncio.run(run())
+```
+
+_Full example: [examples/snippets/servers/lowlevel/direct_call_tool_result.py](https://github.com/modelcontextprotocol/python-sdk/blob/main/examples/snippets/servers/lowlevel/direct_call_tool_result.py)_
+<!-- /snippet-source -->
+
+**Note:** When returning `CallToolResult`, you bypass the automatic content/structured conversion. You must construct the complete response yourself.
+
+### Pagination (Advanced)
+
+For servers that need to handle large datasets, the low-level server provides paginated versions of list operations. This is an optional optimization - most servers won't need pagination unless they're dealing with hundreds or thousands of items.
+
+#### Server-side Implementation
+
+<!-- snippet-source examples/snippets/servers/pagination_example.py -->
+```python
+"""
+Example of implementing pagination with MCP server decorators.
+"""
+
+from pydantic import AnyUrl
+
+import mcp.types as types
+from mcp.server.lowlevel import Server
+
+# Initialize the server
+server = Server("paginated-server")
+
+# Sample data to paginate
+ITEMS = [f"Item {i}" for i in range(1, 101)]  # 100 items
+
+
+@server.list_resources()
+async def list_resources_paginated(request: types.ListResourcesRequest) -> types.ListResourcesResult:
+    """List resources with pagination support."""
+    page_size = 10
+
+    # Extract cursor from request params
+    cursor = request.params.cursor if request.params is not None else None
+
+    # Parse cursor to get offset
+    start = 0 if cursor is None else int(cursor)
+    end = start + page_size
+
+    # Get page of resources
+    page_items = [
+        types.Resource(uri=AnyUrl(f"resource://items/{item}"), name=item, description=f"Description for {item}")
+        for item in ITEMS[start:end]
+    ]
+
+    # Determine next cursor
+    next_cursor = str(end) if end < len(ITEMS) else None
+
+    return types.ListResourcesResult(resources=page_items, nextCursor=next_cursor)
+```
+
+_Full example: [examples/snippets/servers/pagination_example.py](https://github.com/modelcontextprotocol/python-sdk/blob/main/examples/snippets/servers/pagination_example.py)_
+<!-- /snippet-source -->
+
+#### Client-side Consumption
+
+<!-- snippet-source examples/snippets/clients/pagination_client.py -->
+```python
+"""
+Example of consuming paginated MCP endpoints from a client.
+"""
+
+import asyncio
+
+from mcp.client.session import ClientSession
+from mcp.client.stdio import StdioServerParameters, stdio_client
+from mcp.types import PaginatedRequestParams, Resource
+
+
+async def list_all_resources() -> None:
+    """Fetch all resources using pagination."""
+    async with stdio_client(StdioServerParameters(command="uv", args=["run", "mcp-simple-pagination"])) as (
+        read,
+        write,
+    ):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+
+            all_resources: list[Resource] = []
+            cursor = None
+
+            while True:
+                # Fetch a page of resources
+                result = await session.list_resources(params=PaginatedRequestParams(cursor=cursor))
+                all_resources.extend(result.resources)
+
+                print(f"Fetched {len(result.resources)} resources")
+
+                # Check if there are more pages
+                if result.nextCursor:
+                    cursor = result.nextCursor
+                else:
+                    break
+
+            print(f"Total resources: {len(all_resources)}")
+
+
+if __name__ == "__main__":
+    asyncio.run(list_all_resources())
+```
+
+_Full example: [examples/snippets/clients/pagination_client.py](https://github.com/modelcontextprotocol/python-sdk/blob/main/examples/snippets/clients/pagination_client.py)_
+<!-- /snippet-source -->
+
+#### Key Points
+
+- **Cursors are opaque strings** - the server defines the format (numeric offsets, timestamps, etc.)
+- **Return `nextCursor=None`** when there are no more pages
+- **Backward compatible** - clients that don't support pagination will still work (they'll just get the first page)
+- **Flexible page sizes** - Each endpoint can define its own page size based on data characteristics
+
+See the [simple-pagination example](examples/servers/simple-pagination) for a complete implementation.
 
 ### Writing MCP Clients
 
@@ -1940,8 +2449,9 @@ MCP servers declare capabilities during initialization:
 
 ## Documentation
 
+- [API Reference](https://modelcontextprotocol.github.io/python-sdk/api/)
 - [Model Context Protocol documentation](https://modelcontextprotocol.io)
-- [Model Context Protocol specification](https://spec.modelcontextprotocol.io)
+- [Model Context Protocol specification](https://modelcontextprotocol.io/specification/latest)
 - [Officially supported servers](https://github.com/modelcontextprotocol/servers)
 
 ## Contributing

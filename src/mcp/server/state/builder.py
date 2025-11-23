@@ -353,22 +353,22 @@ class StateMachineDefinition:
 
         @app.statebuilder.state("start", is_initial=True)
         def _(s: StateAPI):
-            s.on_tool("login") \
-             .on_success("home", terminal=True) \
-             .build_edge() \
-             .on_tool("alt_login") \
-             .on_error("start") \
+            s.on_tool("login")
+             .on_success("home", terminal=True)
+             .build_edge()
+             .on_tool("alt_login")
+             .on_error("start")
              .build_edge()
 
     **Fluent style**::
 
-        app.statebuilder \
-            .define_state("start", is_initial=True) \
-            .on_prompt("confirm") \
-                .on_success("end", terminal=True) \
-                .build_edge() \
-            .on_tool("help") \
-                .on_success("faq") \
+        app.statebuilder
+            .define_state("start", is_initial=True)
+            .on_prompt("confirm")
+                .on_success("end", terminal=True)
+                .build_edge()
+            .on_tool("help")
+                .on_success("faq")
                 .build_edge()
     """
 

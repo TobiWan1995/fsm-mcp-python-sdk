@@ -11,7 +11,7 @@ Usage:
 
 2. Define request handlers using decorators:
    @server.list_prompts()
-   async def handle_list_prompts() -> list[types.Prompt]:
+   async def handle_list_prompts(request: types.ListPromptsRequest) -> types.ListPromptsResult:
        # Implementation
 
    @server.get_prompt()
@@ -21,7 +21,7 @@ Usage:
        # Implementation
 
    @server.list_tools()
-   async def handle_list_tools() -> list[types.Tool]:
+   async def handle_list_tools(request: types.ListToolsRequest) -> types.ListToolsResult:
        # Implementation
 
    @server.call_tool()
@@ -82,10 +82,10 @@ from pydantic import AnyUrl
 from typing_extensions import TypeVar
 
 import mcp.types as types
+from mcp.server.lowlevel.func_inspection import create_call_wrapper
 from mcp.server.lowlevel.helper_types import ReadResourceContents
 from mcp.server.models import InitializationOptions
 from mcp.server.session import ServerSession
-from mcp.server.stdio import stdio_server as stdio_server
 from mcp.shared.context import RequestContext
 from mcp.shared.exceptions import McpError
 from mcp.shared.message import ServerMessageMetadata, SessionMessage
@@ -136,6 +136,8 @@ class Server(Generic[LifespanResultT, RequestT]):
         name: str,
         version: str | None = None,
         instructions: str | None = None,
+        website_url: str | None = None,
+        icons: list[types.Icon] | None = None,
         lifespan: Callable[
             [Server[LifespanResultT, RequestT]],
             AbstractAsyncContextManager[LifespanResultT],
@@ -144,6 +146,8 @@ class Server(Generic[LifespanResultT, RequestT]):
         self.name = name
         self.version = version
         self.instructions = instructions
+        self.website_url = website_url
+        self.icons = icons
         self.lifespan = lifespan
         
         self.request_handlers: dict[type, Callable[..., Awaitable[types.ServerResult]]] = {
@@ -166,10 +170,10 @@ class Server(Generic[LifespanResultT, RequestT]):
                 from importlib.metadata import version
 
                 return version(package)
-            except Exception:
+            except Exception:  # pragma: no cover
                 pass
 
-            return "unknown"
+            return "unknown"  # pragma: no cover
 
         return InitializationOptions(
             server_name=self.name,
@@ -179,6 +183,8 @@ class Server(Generic[LifespanResultT, RequestT]):
                 experimental_capabilities or {},
             ),
             instructions=self.instructions,
+            website_url=self.website_url,
+            icons=self.icons,
         )
 
     def get_capabilities(
@@ -208,7 +214,7 @@ class Server(Generic[LifespanResultT, RequestT]):
             tools_capability = types.ToolsCapability(listChanged=notification_options.tools_changed)
 
         # Set logging capabilities if handler exists
-        if types.SetLevelRequest in self.request_handlers:
+        if types.SetLevelRequest in self.request_handlers:  # pragma: no cover
             logging_capability = types.LoggingCapability()
 
         # Set completions capabilities if handler exists
@@ -232,12 +238,22 @@ class Server(Generic[LifespanResultT, RequestT]):
         return request_ctx.get()
 
     def list_prompts(self):
-        def decorator(func: Callable[[], Awaitable[list[types.Prompt]]]):
+        def decorator(
+            func: Callable[[], Awaitable[list[types.Prompt]]]
+            | Callable[[types.ListPromptsRequest], Awaitable[types.ListPromptsResult]],
+        ):
             logger.debug("Registering handler for PromptListRequest")
 
-            async def handler(_: Any):
-                prompts = await func()
-                return types.ServerResult(types.ListPromptsResult(prompts=prompts))
+            wrapper = create_call_wrapper(func, types.ListPromptsRequest)
+
+            async def handler(req: types.ListPromptsRequest):
+                result = await wrapper(req)
+                # Handle both old style (list[Prompt]) and new style (ListPromptsResult)
+                if isinstance(result, types.ListPromptsResult):
+                    return types.ServerResult(result)
+                else:
+                    # Old style returns list[Prompt]
+                    return types.ServerResult(types.ListPromptsResult(prompts=result))
 
             self.request_handlers[types.ListPromptsRequest] = handler
             return func
@@ -260,12 +276,22 @@ class Server(Generic[LifespanResultT, RequestT]):
         return decorator
 
     def list_resources(self):
-        def decorator(func: Callable[[], Awaitable[list[types.Resource]]]):
+        def decorator(
+            func: Callable[[], Awaitable[list[types.Resource]]]
+            | Callable[[types.ListResourcesRequest], Awaitable[types.ListResourcesResult]],
+        ):
             logger.debug("Registering handler for ListResourcesRequest")
 
-            async def handler(_: Any):
-                resources = await func()
-                return types.ServerResult(types.ListResourcesResult(resources=resources))
+            wrapper = create_call_wrapper(func, types.ListResourcesRequest)
+
+            async def handler(req: types.ListResourcesRequest):
+                result = await wrapper(req)
+                # Handle both old style (list[Resource]) and new style (ListResourcesResult)
+                if isinstance(result, types.ListResourcesResult):
+                    return types.ServerResult(result)
+                else:
+                    # Old style returns list[Resource]
+                    return types.ServerResult(types.ListResourcesResult(resources=result))
 
             self.request_handlers[types.ListResourcesRequest] = handler
             return func
@@ -302,7 +328,7 @@ class Server(Generic[LifespanResultT, RequestT]):
                                 text=data,
                                 mimeType=mime_type or "text/plain",
                             )
-                        case bytes() as data:
+                        case bytes() as data:  # pragma: no cover
                             import base64
 
                             return types.BlobResourceContents(
@@ -312,7 +338,7 @@ class Server(Generic[LifespanResultT, RequestT]):
                             )
 
                 match result:
-                    case str() | bytes() as data:
+                    case str() | bytes() as data:  # pragma: no cover
                         warnings.warn(
                             "Returning str or bytes from read_resource is deprecated. "
                             "Use Iterable[ReadResourceContents] instead.",
@@ -329,10 +355,10 @@ class Server(Generic[LifespanResultT, RequestT]):
                                 contents=contents_list,
                             )
                         )
-                    case _:
+                    case _:  # pragma: no cover
                         raise ValueError(f"Unexpected return type from read_resource: {type(result)}")
 
-                return types.ServerResult(
+                return types.ServerResult(  # pragma: no cover
                     types.ReadResourceResult(
                         contents=[content],
                     )
@@ -343,7 +369,7 @@ class Server(Generic[LifespanResultT, RequestT]):
 
         return decorator
 
-    def set_logging_level(self):
+    def set_logging_level(self):  # pragma: no cover
         def decorator(func: Callable[[types.LoggingLevel], Awaitable[None]]):
             logger.debug("Registering handler for SetLevelRequest")
 
@@ -356,7 +382,7 @@ class Server(Generic[LifespanResultT, RequestT]):
 
         return decorator
 
-    def subscribe_resource(self):
+    def subscribe_resource(self):  # pragma: no cover
         def decorator(func: Callable[[AnyUrl], Awaitable[None]]):
             logger.debug("Registering handler for SubscribeRequest")
 
@@ -369,7 +395,7 @@ class Server(Generic[LifespanResultT, RequestT]):
 
         return decorator
 
-    def unsubscribe_resource(self):
+    def unsubscribe_resource(self):  # pragma: no cover
         def decorator(func: Callable[[AnyUrl], Awaitable[None]]):
             logger.debug("Registering handler for UnsubscribeRequest")
 
@@ -383,16 +409,30 @@ class Server(Generic[LifespanResultT, RequestT]):
         return decorator
 
     def list_tools(self):
-        def decorator(func: Callable[[], Awaitable[list[types.Tool]]]):
+        def decorator(
+            func: Callable[[], Awaitable[list[types.Tool]]]
+            | Callable[[types.ListToolsRequest], Awaitable[types.ListToolsResult]],
+        ):
             logger.debug("Registering handler for ListToolsRequest")
 
-            async def handler(_: Any):
-                tools = await func()
-                # Refresh the tool cache
-                self._tool_cache.clear()
-                for tool in tools:
-                    self._tool_cache[tool.name] = tool
-                return types.ServerResult(types.ListToolsResult(tools=tools))
+            wrapper = create_call_wrapper(func, types.ListToolsRequest)
+
+            async def handler(req: types.ListToolsRequest):
+                result = await wrapper(req)
+
+                # Handle both old style (list[Tool]) and new style (ListToolsResult)
+                if isinstance(result, types.ListToolsResult):  # pragma: no cover
+                    # Refresh the tool cache with returned tools
+                    for tool in result.tools:
+                        self._tool_cache[tool.name] = tool
+                    return types.ServerResult(result)
+                else:
+                    # Old style returns list[Tool]
+                    # Clear and refresh the entire tool cache
+                    self._tool_cache.clear()
+                    for tool in result:
+                        self._tool_cache[tool.name] = tool
+                    return types.ServerResult(types.ListToolsResult(tools=result))
 
             self.request_handlers[types.ListToolsRequest] = handler
             return func
@@ -442,7 +482,7 @@ class Server(Generic[LifespanResultT, RequestT]):
         def decorator(
             func: Callable[
                 ...,
-                Awaitable[UnstructuredContent | StructuredContent | CombinationContent],
+                Awaitable[UnstructuredContent | StructuredContent | CombinationContent | types.CallToolResult],
             ],
         ):
             logger.debug("Registering handler for CallToolRequest")
@@ -466,18 +506,20 @@ class Server(Generic[LifespanResultT, RequestT]):
                     # output normalization
                     unstructured_content: UnstructuredContent
                     maybe_structured_content: StructuredContent | None
-                    if isinstance(results, tuple) and len(results) == 2:
+                    if isinstance(results, types.CallToolResult):
+                        return types.ServerResult(results)
+                    elif isinstance(results, tuple) and len(results) == 2:
                         # tool returned both structured and unstructured content
                         unstructured_content, maybe_structured_content = cast(CombinationContent, results)
                     elif isinstance(results, dict):
                         # tool returned structured content only
                         maybe_structured_content = cast(StructuredContent, results)
                         unstructured_content = [types.TextContent(type="text", text=json.dumps(results, indent=2))]
-                    elif hasattr(results, "__iter__"):
+                    elif hasattr(results, "__iter__"):  # pragma: no cover
                         # tool returned unstructured content only
                         unstructured_content = cast(UnstructuredContent, results)
                         maybe_structured_content = None
-                    else:
+                    else:  # pragma: no cover
                         return self._make_error_result(f"Unexpected return type from tool: {type(results).__name__}")
 
                     # output validation
@@ -604,15 +646,23 @@ class Server(Generic[LifespanResultT, RequestT]):
         raise_exceptions: bool = False,
     ):
         with warnings.catch_warnings(record=True) as w:
-            # TODO(Marcelo): We should be checking if message is Exception here.
-            match message:  # type: ignore[reportMatchNotExhaustive]
+            match message:
                 case RequestResponder(request=types.ClientRequest(root=req)) as responder:
                     with responder:
                         await self._handle_request(message, req, session, lifespan_context, raise_exceptions)
                 case types.ClientNotification(root=notify):
                     await self._handle_notification(notify)
+                case Exception():  # pragma: no cover
+                    logger.error(f"Received exception from stream: {message}")
+                    await session.send_log_message(
+                        level="error",
+                        data="Internal Server Error",
+                        logger="mcp.server.exception_handler",
+                    )
+                    if raise_exceptions:
+                        raise message
 
-            for warning in w:
+            for warning in w:  # pragma: no cover
                 logger.info("Warning: %s: %s", warning.category.__name__, warning.message)
 
     async def _handle_request(
@@ -631,7 +681,9 @@ class Server(Generic[LifespanResultT, RequestT]):
             try:
                 # Extract request context from message metadata
                 request_data = None
-                if message.message_metadata is not None and isinstance(message.message_metadata, ServerMessageMetadata):
+                if message.message_metadata is not None and isinstance(
+                    message.message_metadata, ServerMessageMetadata
+                ):  # pragma: no cover
                     request_data = message.message_metadata.request_context
 
                 # Set our global state that can be retrieved via
@@ -646,25 +698,25 @@ class Server(Generic[LifespanResultT, RequestT]):
                     )
                 )
                 response = await handler(req)
-            except McpError as err:
+            except McpError as err:  # pragma: no cover
                 response = err.error
-            except anyio.get_cancelled_exc_class():
+            except anyio.get_cancelled_exc_class():  # pragma: no cover
                 logger.info(
                     "Request %s cancelled - duplicate response suppressed",
                     message.request_id,
                 )
                 return
-            except Exception as err:
+            except Exception as err:  # pragma: no cover
                 if raise_exceptions:
                     raise err
                 response = types.ErrorData(code=0, message=str(err), data=None)
             finally:
                 # Reset the global state after we are done
-                if token is not None:
+                if token is not None:  # pragma: no branch
                     request_ctx.reset(token)
 
             await message.respond(response)
-        else:
+        else:  # pragma: no cover
             await message.respond(
                 types.ErrorData(
                     code=types.METHOD_NOT_FOUND,
@@ -680,7 +732,7 @@ class Server(Generic[LifespanResultT, RequestT]):
 
             try:
                 await handler(notify)
-            except Exception:
+            except Exception:  # pragma: no cover
                 logger.exception("Uncaught exception in notification handler")
 
 

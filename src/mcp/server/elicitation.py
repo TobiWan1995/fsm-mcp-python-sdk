@@ -56,7 +56,7 @@ def _is_primitive_field(field_info: FieldInfo) -> bool:
     annotation = field_info.annotation
 
     # Handle None type
-    if annotation is types.NoneType:
+    if annotation is types.NoneType:  # pragma: no cover
         return True
 
     # Handle basic primitive types
@@ -98,14 +98,14 @@ async def elicit_with_validation(
         related_request_id=related_request_id,
     )
 
-    if result.action == "accept" and result.content:
+    if result.action == "accept" and result.content is not None:
         # Validate and parse the content using the schema
         validated_data = schema.model_validate(result.content)
         return AcceptedElicitation(data=validated_data)
     elif result.action == "decline":
         return DeclinedElicitation()
-    elif result.action == "cancel":
+    elif result.action == "cancel":  # pragma: no cover
         return CancelledElicitation()
-    else:
+    else:  # pragma: no cover
         # This should never happen, but handle it just in case
         raise ValueError(f"Unexpected elicitation action: {result.action}")

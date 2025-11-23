@@ -180,16 +180,6 @@ class StatefulMCP(FastMCP[LifespanResultT]):
 
         Execute via the state-aware ToolManager. Access is constrained by the
         session-scoped state machine to tools allowed in the *current state* of the *current session*. 
-        
-        Forwards the execution context so that tools can access session data.
-
-        Example usage::
-
-            def tool_with_context(ctx: StatefulMCPContext) -> str:
-                return ctx.request_context.session.session_id
-
-        Note:
-            The context parameter is automatically removed from the signature when listing tools.
         """
         assert self._stateful_tools is not None, "Stateful managers not initialized; call run() first"
         return await self._stateful_tools.call_tool(name, arguments, self.get_context())

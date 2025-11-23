@@ -11,7 +11,7 @@ from starlette.routing import Mount
 from mcp.server.fastmcp import FastMCP
 
 # Create the Echo server
-echo_mcp = FastMCP(name="EchoServer", stateless_http=True)
+echo_mcp = FastMCP(name="EchoServer", stateless_http=True, json_response=True)
 
 
 @echo_mcp.tool()
@@ -21,7 +21,7 @@ def echo(message: str) -> str:
 
 
 # Create the Math server
-math_mcp = FastMCP(name="MathServer", stateless_http=True)
+math_mcp = FastMCP(name="MathServer", stateless_http=True, json_response=True)
 
 
 @math_mcp.tool()
@@ -47,3 +47,8 @@ app = Starlette(
     ],
     lifespan=lifespan,
 )
+
+# Note: Clients connect to http://localhost:8000/echo/mcp and http://localhost:8000/math/mcp
+# To mount at the root of each path (e.g., /echo instead of /echo/mcp):
+# echo_mcp.settings.streamable_http_path = "/"
+# math_mcp.settings.streamable_http_path = "/"

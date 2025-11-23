@@ -47,6 +47,7 @@ from pydantic import AnyUrl
 
 import mcp.types as types
 from mcp.server.models import InitializationOptions
+from mcp.shared.exceptions import McpError
 from mcp.shared.message import ServerMessageMetadata, SessionMessage
 from mcp.shared.session import (
     BaseSession,
@@ -100,9 +101,9 @@ class ServerSession(
 
     @property
     def client_params(self) -> types.InitializeRequestParams | None:
-        return self._client_params
+        return self._client_params  # pragma: no cover
 
-    def check_client_capability(self, capability: types.ClientCapabilities) -> bool:
+    def check_client_capability(self, capability: types.ClientCapabilities) -> bool:  # pragma: no cover
         """Check if the client supports a specific capability."""
         if self._client_params is None:
             return False
@@ -120,6 +121,12 @@ class ServerSession(
         if capability.sampling is not None:
             if client_caps.sampling is None:
                 return False
+            if capability.sampling.context is not None:
+                if client_caps.sampling.context is None:
+                    return False
+            if capability.sampling.tools is not None:
+                if client_caps.sampling.tools is None:
+                    return False
 
         if capability.elicitation is not None:
             if client_caps.elicitation is None:
@@ -156,11 +163,17 @@ class ServerSession(
                                 serverInfo=types.Implementation(
                                     name=self._init_options.server_name,
                                     version=self._init_options.server_version,
+                                    websiteUrl=self._init_options.website_url,
+                                    icons=self._init_options.icons,
                                 ),
                                 instructions=self._init_options.instructions,
                             )
                         )
                     )
+                self._initialization_state = InitializationState.Initialized
+            case types.PingRequest():
+                # Ping requests are allowed at any time
+                pass
             case _:
                 if self._initialization_state != InitializationState.Initialized:
                     raise RuntimeError("Received request before initialization was complete")
@@ -172,7 +185,7 @@ class ServerSession(
             case types.InitializedNotification():
                 self._initialization_state = InitializationState.Initialized
             case _:
-                if self._initialization_state != InitializationState.Initialized:
+                if self._initialization_state != InitializationState.Initialized:  # pragma: no cover
                     raise RuntimeError("Received notification before initialization was complete")
 
     async def send_log_message(
@@ -186,7 +199,6 @@ class ServerSession(
         await self.send_notification(
             types.ServerNotification(
                 types.LoggingMessageNotification(
-                    method="notifications/message",
                     params=types.LoggingMessageNotificationParams(
                         level=level,
                         data=data,
@@ -197,12 +209,11 @@ class ServerSession(
             related_request_id,
         )
 
-    async def send_resource_updated(self, uri: AnyUrl) -> None:
+    async def send_resource_updated(self, uri: AnyUrl) -> None:  # pragma: no cover
         """Send a resource updated notification."""
         await self.send_notification(
             types.ServerNotification(
                 types.ResourceUpdatedNotification(
-                    method="notifications/resources/updated",
                     params=types.ResourceUpdatedNotificationParams(uri=uri),
                 )
             )
@@ -219,13 +230,78 @@ class ServerSession(
         stop_sequences: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
         model_preferences: types.ModelPreferences | None = None,
+        tools: list[types.Tool] | None = None,
+        tool_choice: types.ToolChoice | None = None,
         related_request_id: types.RequestId | None = None,
     ) -> types.CreateMessageResult:
-        """Send a sampling/create_message request."""
+        """Send a sampling/create_message request.
+
+        Args:
+            messages: The conversation messages to send.
+            max_tokens: Maximum number of tokens to generate.
+            system_prompt: Optional system prompt.
+            include_context: Optional context inclusion setting.
+                Should only be set to "thisServer" or "allServers"
+                if the client has sampling.context capability.
+            temperature: Optional sampling temperature.
+            stop_sequences: Optional stop sequences.
+            metadata: Optional metadata to pass through to the LLM provider.
+            model_preferences: Optional model selection preferences.
+            tools: Optional list of tools the LLM can use during sampling.
+                Requires client to have sampling.tools capability.
+            tool_choice: Optional control over tool usage behavior.
+                Requires client to have sampling.tools capability.
+            related_request_id: Optional ID of a related request.
+
+        Returns:
+            The sampling result from the client.
+
+        Raises:
+            McpError: If tool_use or tool_result blocks are misused when tools are provided.
+        """
+
+        if tools is not None or tool_choice is not None:
+            has_tools_cap = self.check_client_capability(
+                types.ClientCapabilities(sampling=types.SamplingCapability(tools=types.SamplingToolsCapability()))
+            )
+            if not has_tools_cap:
+                raise McpError(
+                    types.ErrorData(
+                        code=types.INVALID_PARAMS,
+                        message="Client does not support sampling tools capability",
+                    )
+                )
+
+        # Validate tool_use/tool_result message structure per SEP-1577:
+        # https://github.com/modelcontextprotocol/modelcontextprotocol/issues/1577
+        # This validation runs regardless of whether `tools` is in this request,
+        # since a tool loop continuation may omit `tools` while still containing
+        # tool_result content that must match previous tool_use.
+        if messages:
+            last_content = messages[-1].content_as_list
+            has_tool_results = any(c.type == "tool_result" for c in last_content)
+
+            previous_content = messages[-2].content_as_list if len(messages) >= 2 else None
+            has_previous_tool_use = previous_content and any(c.type == "tool_use" for c in previous_content)
+
+            if has_tool_results:
+                # Per spec: "SamplingMessage with tool result content blocks
+                # MUST NOT contain other content types."
+                if any(c.type != "tool_result" for c in last_content):
+                    raise ValueError("The last message must contain only tool_result content if any is present")
+                if previous_content is None:
+                    raise ValueError("tool_result requires a previous message containing tool_use")
+                if not has_previous_tool_use:
+                    raise ValueError("tool_result blocks do not match any tool_use in the previous message")
+            if has_previous_tool_use and previous_content:
+                tool_use_ids = {c.id for c in previous_content if c.type == "tool_use"}
+                tool_result_ids = {c.toolUseId for c in last_content if c.type == "tool_result"}
+                if tool_use_ids != tool_result_ids:
+                    raise ValueError("ids of tool_result blocks and tool_use blocks from previous message do not match")
+
         return await self.send_request(
             request=types.ServerRequest(
                 types.CreateMessageRequest(
-                    method="sampling/createMessage",
                     params=types.CreateMessageRequestParams(
                         messages=messages,
                         systemPrompt=system_prompt,
@@ -235,6 +311,8 @@ class ServerSession(
                         stopSequences=stop_sequences,
                         metadata=metadata,
                         modelPreferences=model_preferences,
+                        tools=tools,
+                        toolChoice=tool_choice,
                     ),
                 )
             ),
@@ -247,11 +325,7 @@ class ServerSession(
     async def list_roots(self) -> types.ListRootsResult:
         """Send a roots/list request."""
         return await self.send_request(
-            types.ServerRequest(
-                types.ListRootsRequest(
-                    method="roots/list",
-                )
-            ),
+            types.ServerRequest(types.ListRootsRequest()),
             types.ListRootsResult,
         )
 
@@ -273,7 +347,6 @@ class ServerSession(
         return await self.send_request(
             types.ServerRequest(
                 types.ElicitRequest(
-                    method="elicitation/create",
                     params=types.ElicitRequestParams(
                         message=message,
                         requestedSchema=requestedSchema,
@@ -284,14 +357,10 @@ class ServerSession(
             metadata=ServerMessageMetadata(related_request_id=related_request_id),
         )
 
-    async def send_ping(self) -> types.EmptyResult:
+    async def send_ping(self) -> types.EmptyResult:  # pragma: no cover
         """Send a ping request."""
         return await self.send_request(
-            types.ServerRequest(
-                types.PingRequest(
-                    method="ping",
-                )
-            ),
+            types.ServerRequest(types.PingRequest()),
             types.EmptyResult,
         )
 
@@ -307,7 +376,6 @@ class ServerSession(
         await self.send_notification(
             types.ServerNotification(
                 types.ProgressNotification(
-                    method="notifications/progress",
                     params=types.ProgressNotificationParams(
                         progressToken=progress_token,
                         progress=progress,
@@ -319,35 +387,17 @@ class ServerSession(
             related_request_id,
         )
 
-    async def send_resource_list_changed(self) -> None:
+    async def send_resource_list_changed(self) -> None:  # pragma: no cover
         """Send a resource list changed notification."""
-        await self.send_notification(
-            types.ServerNotification(
-                types.ResourceListChangedNotification(
-                    method="notifications/resources/list_changed",
-                )
-            )
-        )
+        await self.send_notification(types.ServerNotification(types.ResourceListChangedNotification()))
 
-    async def send_tool_list_changed(self) -> None:
+    async def send_tool_list_changed(self) -> None:  # pragma: no cover
         """Send a tool list changed notification."""
-        await self.send_notification(
-            types.ServerNotification(
-                types.ToolListChangedNotification(
-                    method="notifications/tools/list_changed",
-                )
-            )
-        )
+        await self.send_notification(types.ServerNotification(types.ToolListChangedNotification()))
 
-    async def send_prompt_list_changed(self) -> None:
+    async def send_prompt_list_changed(self) -> None:  # pragma: no cover
         """Send a prompt list changed notification."""
-        await self.send_notification(
-            types.ServerNotification(
-                types.PromptListChangedNotification(
-                    method="notifications/prompts/list_changed",
-                )
-            )
-        )
+        await self.send_notification(types.ServerNotification(types.PromptListChangedNotification()))
 
     async def _handle_incoming(self, req: ServerRequestResponder) -> None:
         await self._incoming_message_stream_writer.send(req)
