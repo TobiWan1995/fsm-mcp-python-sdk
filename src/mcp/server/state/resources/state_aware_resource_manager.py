@@ -87,7 +87,7 @@ class StateAwareResourceManager:
                     f"Use list_resources() to inspect availability."
                 )
 
-            resource = await self._resource_manager.get_resource(uri_str)
+            resource = await self._resource_manager.get_resource(uri_str, ctx)
             if not resource:
                 raise ResourceError(f"Unknown resource: {uri}")
 
