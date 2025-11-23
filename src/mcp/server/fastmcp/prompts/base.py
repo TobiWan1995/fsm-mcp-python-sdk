@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import functools
 import inspect
 from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Any, Literal
 
 import pydantic_core
-from pydantic import BaseModel, Field, TypeAdapter
+from pydantic import BaseModel, Field, TypeAdapter, validate_call
 
 from mcp.server.fastmcp.utilities.context_injection import find_context_parameter, inject_context
 from mcp.server.fastmcp.utilities.func_metadata import func_metadata
@@ -93,8 +92,6 @@ class Prompt(BaseModel):
         - A dict (converted to a message)
         - A sequence of any of the above
         """
-        from mcp.server.fastmcp.server import Context  # local import to avoid cycles
-
         func_name = name or fn.__name__
 
         if func_name == "<lambda>":  # pragma: no cover
@@ -124,10 +121,13 @@ class Prompt(BaseModel):
                     )
                 )
 
+        # ensure the arguments are properly cast
+        fn = validate_call(fn)
+
         return cls(
             name=func_name,
             title=title,
-            description=func_doc,
+            description=description or fn.__doc__ or "",
             arguments=arguments,
             fn=fn,
             icons=icons,
@@ -158,7 +158,7 @@ class Prompt(BaseModel):
                 result = await result
 
             # Validate messages
-            if not isinstance(result, (list, tuple)):
+            if not isinstance(result, list | tuple):
                 result = [result]
 
             # Convert result to messages
@@ -181,13 +181,3 @@ class Prompt(BaseModel):
             return messages
         except Exception as e:  # pragma: no cover
             raise ValueError(f"Error rendering prompt {self.name}: {e}")
-
-
-def _is_async_callable(obj: Any) -> bool:
-    """Check if an object is an async callable (copied from Tool implementation)."""
-    while isinstance(obj, functools.partial):
-        obj = obj.func
-
-    return inspect.iscoroutinefunction(obj) or (
-        callable(obj) and inspect.iscoroutinefunction(getattr(obj, "__call__", None))
-    )
