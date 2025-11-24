@@ -207,14 +207,13 @@ class StateMachineValidator:
         # Then, try to satisfy remaining refs via templates
         unmatched = resource_refs - static_uris
 
-        # Design note: static resources are preferred over templates when
-        # determining availability. Templates are only consulted for URIs
-        # that do not exist as concrete resources.
         if unmatched and templates:
             for uri in unmatched:
                 uri_str = str(uri)
                 for tmpl in templates:
-                    if tmpl.matches(uri_str):
+                    # Important! matches returns a dict with no params to replace or None
+                    # If this returns only None if there are no parameters to replace this will break
+                    if tmpl.matches(uri_str) is not None:
                         resource_idents.add(uri_str)
                         break
 

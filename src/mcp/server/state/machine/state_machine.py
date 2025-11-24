@@ -265,16 +265,40 @@ class StateMachine:
     def available_symbols(self, kind: str) -> set[str]:
         """
         Return the set of *idents* available from the current state for the given kind.
+
+        Only bindings whose result space is complete (SUCCESS and ERROR) are considered
+        available. If a partial binding is encountered, this indicates an inconsistent
+        state machine definition and a ValueError is raised.
         """
-        idents: set[str] = set()
         sname = self.current_state()
+
+        # (ident) -> set of observed ResultType values (SUCCESS/ERROR) in this state
+        results_by_ident: dict[str, set[ResultType]] = {}
+
         for e in self._edges:
             if e.from_state != sname:
                 continue
+
             sym = self._symbols_by_id.get(e.symbol_id)
-            if sym and sym.kind == kind:
-                idents.add(sym.ident)
-        return idents
+            if sym is None or sym.kind != kind:
+                continue
+
+            bucket = results_by_ident.setdefault(sym.ident, set())
+            bucket.add(sym.result)
+
+        available: set[str] = set()
+
+        for ident, results in results_by_ident.items():
+            if ResultType.SUCCESS in results and ResultType.ERROR in results:
+                available.add(ident)
+            else:
+                raise ValueError(
+                    "Inconsistent state machine: binding "
+                    f"'{kind}/{ident}' in state '{sname}' does not define "
+                    "a complete result space (SUCCESS and ERROR)."
+                )
+
+        return available
 
 
 # ----------------------------------------------
