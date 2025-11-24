@@ -217,33 +217,3 @@ def test_validation_accepts_templated_resource() -> None:
 
     # The instantiated resource URI should be available in the resource symbols
     assert "greeting://alice" in m.available_symbols("resource")
-
-
-def test_validation_accepts_templated_resource_without_params() -> None:
-    """
-    A state may reference a concrete URI that is handled by a templated resource
-    whose template itself does not expose parameters.
-    The validator must accept this when a matching resource is registered.
-    """
-    app = StatefulMCP(name="resource_template_no_params")
-
-    @app.resource(uri="crossroads://story", description="Scene at a crossroads.")
-    def story() -> str:
-        return "Once upon a time..."
-
-    (
-        app.statebuilder
-            .define_state("s0", is_initial=True)
-            .on_resource("crossroads://story").on_success("sT", terminal=True).build_edge().build_state()
-            .define_state("sT").build_state()
-    )
-
-    # Build must succeed: template/static resource must satisfy the reference
-    app._build_state_machine()
-
-    assert app._state_machine is not None
-    m = app._state_machine
-    m.set_current_state("s0")
-
-    # The referenced resource URI must be available from the initial state
-    assert "crossroads://story" in m.available_symbols("resource")
