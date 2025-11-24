@@ -47,30 +47,6 @@ class LoggingFnT(Protocol):
     ) -> None: ...  # pragma: no branch
 
 
-class TransactionPrepareFnT(Protocol):
-    async def __call__(
-        self,
-        context: RequestContext["ClientSession", Any],
-        params: types.TransactionPrepareRequestParams,
-    ) -> types.TransactionResult | types.ErrorData: ...
-
-
-class TransactionCommitFnT(Protocol):
-    async def __call__(
-        self,
-        context: RequestContext["ClientSession", Any],
-        params: types.TransactionCommitRequestParams,
-    ) -> types.TransactionResult | types.ErrorData: ...
-
-
-class TransactionAbortFnT(Protocol):
-    async def __call__(
-        self,
-        context: RequestContext["ClientSession", Any],
-        params: types.TransactionAbortRequestParams,
-    ) -> types.TransactionResult | types.ErrorData: ...
-
-
 class MessageHandlerFnT(Protocol):
     async def __call__(
         self,
@@ -119,27 +95,6 @@ async def _default_logging_callback(
     pass
 
 
-async def _default_tx_prepare_callback(
-    context: RequestContext["ClientSession", Any],
-    params: types.TransactionPrepareRequestParams,
-) -> types.TransactionResult | types.ErrorData:
-    return types.ErrorData(code=types.INVALID_REQUEST, message="Transactions not supported")
-
-
-async def _default_tx_commit_callback(
-    context: RequestContext["ClientSession", Any],
-    params: types.TransactionCommitRequestParams,
-) -> types.TransactionResult | types.ErrorData:
-    return types.ErrorData(code=types.INVALID_REQUEST, message="Transactions not supported")
-
-
-async def _default_tx_abort_callback(
-    context: RequestContext["ClientSession", Any],
-    params: types.TransactionAbortRequestParams,
-) -> types.TransactionResult | types.ErrorData:
-    return types.ErrorData(code=types.INVALID_REQUEST, message="Transactions not supported")
-
-
 ClientResponse: TypeAdapter[types.ClientResult | types.ErrorData] = TypeAdapter(types.ClientResult | types.ErrorData)
 
 
@@ -161,9 +116,6 @@ class ClientSession(
         elicitation_callback: ElicitationFnT | None = None,
         list_roots_callback: ListRootsFnT | None = None,
         logging_callback: LoggingFnT | None = None,
-        tx_prepare_callback: TransactionPrepareFnT | None = None,
-        tx_commit_callback: TransactionCommitFnT | None = None,
-        tx_abort_callback: TransactionAbortFnT | None = None,
         message_handler: MessageHandlerFnT | None = None,
         client_info: types.Implementation | None = None,
     ) -> None:
@@ -179,16 +131,15 @@ class ClientSession(
         self._elicitation_callback = elicitation_callback or _default_elicitation_callback
         self._list_roots_callback = list_roots_callback or _default_list_roots_callback
         self._logging_callback = logging_callback or _default_logging_callback
-        self._tx_prepare_callback = tx_prepare_callback or _default_tx_prepare_callback
-        self._tx_commit_callback = tx_commit_callback or _default_tx_commit_callback
-        self._tx_abort_callback = tx_abort_callback or _default_tx_abort_callback
         self._message_handler = message_handler or _default_message_handler
         self._tool_output_schemas: dict[str, dict[str, Any] | None] = {}
         self._server_capabilities: types.ServerCapabilities | None = None
 
     async def initialize(self) -> types.InitializeResult:
         sampling = types.SamplingCapability() if self._sampling_callback is not _default_sampling_callback else None
-        elicitation = types.ElicitationCapability() if self._elicitation_callback is not _default_elicitation_callback else None
+        elicitation = (
+            types.ElicitationCapability() if self._elicitation_callback is not _default_elicitation_callback else None
+        )
         roots = (
             # TODO: Should this be based on whether we
             # _will_ send notifications, or only whether
@@ -198,20 +149,6 @@ class ClientSession(
             else None
         )
 
-        experimental: dict[str, Any] | None = None
-        if (
-            self._tx_prepare_callback is not _default_tx_prepare_callback
-            or self._tx_commit_callback is not _default_tx_commit_callback
-            or self._tx_abort_callback is not _default_tx_abort_callback
-        ):
-            experimental = {
-                "transactions": {
-                    "prepare": self._tx_prepare_callback is not _default_tx_prepare_callback,
-                    "commit":  self._tx_commit_callback  is not _default_tx_commit_callback,
-                    "abort":   self._tx_abort_callback   is not _default_tx_abort_callback,
-                }
-            }
-       
         result = await self.send_request(
             types.ClientRequest(
                 types.InitializeRequest(
@@ -220,7 +157,7 @@ class ClientSession(
                         capabilities=types.ClientCapabilities(
                             sampling=sampling,
                             elicitation=elicitation,
-                            experimental=experimental,
+                            experimental=None,
                             roots=roots,
                         ),
                         clientInfo=self._client_info,
@@ -601,24 +538,6 @@ class ClientSession(
             case types.PingRequest():  # pragma: no cover
                 with responder:
                     return await responder.respond(types.ClientResult(root=types.EmptyResult()))
-                
-            case types.TransactionPrepareRequest(params=params):
-                with responder:
-                    response = await self._tx_prepare_callback(ctx, params)
-                    client_response = ClientResponse.validate_python(response)
-                    await responder.respond(client_response)
-
-            case types.TransactionCommitRequest(params=params):
-                with responder:
-                    response = await self._tx_commit_callback(ctx, params)
-                    client_response = ClientResponse.validate_python(response)
-                    await responder.respond(client_response)
-
-            case types.TransactionAbortRequest(params=params):
-                with responder:
-                    response = await self._tx_abort_callback(ctx, params)
-                    client_response = ClientResponse.validate_python(response)
-                    await responder.respond(client_response)
 
     async def _handle_incoming(
         self,

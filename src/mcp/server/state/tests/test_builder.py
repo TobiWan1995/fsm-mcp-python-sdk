@@ -6,8 +6,7 @@ from pytest import LogCaptureFixture
 
 from mcp.server.state.builder import _InternalStateMachineBuilder
 from mcp.server.state.machine.state_machine import InputSymbol
-from mcp.server.state.types import ToolResultType
-from mcp.server.state.transaction.manager import TransactionManager
+from mcp.server.state.types import ResultType
 from mcp.server.fastmcp.tools import ToolManager
 from mcp.server.fastmcp.resources import ResourceManager
 from mcp.server.fastmcp.prompts import PromptManager
@@ -19,7 +18,6 @@ def make_builder() -> _InternalStateMachineBuilder:
         tool_manager=ToolManager(),
         resource_manager=ResourceManager(),
         prompt_manager=PromptManager(),
-        tx_manager=TransactionManager(),
     )
 
 
@@ -51,7 +49,7 @@ def test_define_state_does_not_clear_edges(caplog: LogCaptureFixture) -> None:
     b.add_state("s0", is_initial=True)
     b.add_state("s1")
 
-    sym = InputSymbol.for_tool("t", ToolResultType.SUCCESS)
+    sym = InputSymbol.for_tool("t", ResultType.SUCCESS)
     b.add_edge("s0", "s1", sym)
 
     # edges are globally stored now; ensure one edge exists from s0
@@ -78,7 +76,7 @@ def test_add_terminal_marks_target_state() -> None:
     b.add_state("s0", is_initial=True)
     b.add_state("s1")
 
-    sym = InputSymbol.for_tool("login", ToolResultType.SUCCESS)
+    sym = InputSymbol.for_tool("login", ResultType.SUCCESS)
     b.add_edge("s0", "s1", sym)
     b.add_terminal("s1", sym)
 
@@ -94,7 +92,7 @@ def test_builder_duplicate_edge_warns_and_is_ignored(caplog: LogCaptureFixture) 
     b.add_state("s0")
     b.add_state("s1")
 
-    sym = InputSymbol.for_tool("t", ToolResultType.SUCCESS)
+    sym = InputSymbol.for_tool("t", ResultType.SUCCESS)
 
     with caplog.at_level("WARNING"):
         b.add_edge("s0", "s1", sym)
@@ -120,7 +118,7 @@ def test_builder_ambiguous_edge_warns_and_is_ignored(caplog: LogCaptureFixture) 
     b.add_state("s1")
     b.add_state("s2")
 
-    sym = InputSymbol.for_tool("t", ToolResultType.SUCCESS)
+    sym = InputSymbol.for_tool("t", ResultType.SUCCESS)
 
     with caplog.at_level("WARNING"):
         b.add_edge("s0", "s1", sym)

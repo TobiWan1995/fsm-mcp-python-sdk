@@ -5,9 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from mcp.server.state.machine.state_machine import InputSymbol
 from mcp.server.state.server import StatefulMCP
-from mcp.server.state.types import ToolResultType
 
 
 @pytest.fixture
@@ -122,38 +120,23 @@ async def test_path_A_cycle_then_terminal(app_branch_cycle_machine: StatefulMCP)
     sm = app._state_machine
     assert sm is not None and sm.current_state() == "s0"
 
-    async with sm.step(
-        success_symbol=InputSymbol.for_tool("t_login", ToolResultType.SUCCESS),
-        error_symbol=InputSymbol.for_tool("t_login", ToolResultType.ERROR),
-    ):
+    async with sm.step(kind="tool", ident="t_login"):
         pass
     assert sm.current_state() == "s1"
 
-    async with sm.step(
-        success_symbol=InputSymbol.for_tool("t_next", ToolResultType.SUCCESS),
-        error_symbol=InputSymbol.for_tool("t_next", ToolResultType.ERROR),
-    ):
+    async with sm.step(kind="tool", ident="t_next"):
         pass
     assert sm.current_state() == "s2"
 
-    async with sm.step(
-        success_symbol=InputSymbol.for_tool("t_back", ToolResultType.SUCCESS),
-        error_symbol=InputSymbol.for_tool("t_back", ToolResultType.ERROR),
-    ):
+    async with sm.step(kind="tool", ident="t_back"):
         pass
     assert sm.current_state() == "s1"  # cycle back
 
-    async with sm.step(
-        success_symbol=InputSymbol.for_tool("t_next", ToolResultType.SUCCESS),
-        error_symbol=InputSymbol.for_tool("t_next", ToolResultType.ERROR),
-    ):
+    async with sm.step(kind="tool", ident="t_next"):
         pass
     assert sm.current_state() == "s2"
 
-    async with sm.step(
-        success_symbol=InputSymbol.for_tool("t_finish", ToolResultType.SUCCESS),
-        error_symbol=InputSymbol.for_tool("t_finish", ToolResultType.ERROR),
-    ):
+    async with sm.step(kind="tool", ident="t_finish"):
         pass
     # sT is terminal → auto-reset
     assert sm.current_state() == "s0"
@@ -171,24 +154,15 @@ async def test_path_B_branch_merge_then_terminal(app_branch_cycle_machine: State
     sm = app._state_machine
     assert sm is not None and sm.current_state() == "s0"
 
-    async with sm.step(
-        success_symbol=InputSymbol.for_tool("t_alt", ToolResultType.SUCCESS),
-        error_symbol=InputSymbol.for_tool("t_alt", ToolResultType.ERROR),
-    ):
+    async with sm.step(kind="tool", ident="t_alt"):
         pass
     assert sm.current_state() == "sA"
 
-    async with sm.step(
-        success_symbol=InputSymbol.for_tool("t_merge", ToolResultType.SUCCESS),
-        error_symbol=InputSymbol.for_tool("t_merge", ToolResultType.ERROR),
-    ):
+    async with sm.step(kind="tool", ident="t_merge"):
         pass
     assert sm.current_state() == "s2"
 
-    async with sm.step(
-        success_symbol=InputSymbol.for_tool("t_finish", ToolResultType.SUCCESS),
-        error_symbol=InputSymbol.for_tool("t_finish", ToolResultType.ERROR),
-    ):
+    async with sm.step(kind="tool", ident="t_finish"):
         pass
     assert sm.current_state() == "s0"  # reset after terminal
 
@@ -204,18 +178,12 @@ async def test_path_C_abort_from_s1_to_terminal(app_branch_cycle_machine: Statef
     sm = app._state_machine
     assert sm is not None and sm.current_state() == "s0"
 
-    async with sm.step(
-        success_symbol=InputSymbol.for_tool("t_login", ToolResultType.SUCCESS),
-        error_symbol=InputSymbol.for_tool("t_login", ToolResultType.ERROR),
-    ):
+    async with sm.step(kind="tool", ident="t_login"):
         pass
     assert sm.current_state() == "s1"
 
     with pytest.raises(ValueError):
-        async with sm.step(
-            success_symbol=InputSymbol.for_tool("t_abort", ToolResultType.SUCCESS),
-            error_symbol=InputSymbol.for_tool("t_abort", ToolResultType.ERROR),
-        ):
+        async with sm.step(kind="tool", ident="t_abort"):
             raise ValueError()
 
     assert sm.current_state() == "s0"  # reset after terminal

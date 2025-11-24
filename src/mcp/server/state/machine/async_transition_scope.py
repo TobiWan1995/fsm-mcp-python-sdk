@@ -27,7 +27,8 @@ class AsyncTransitionScope:
           * the state is updated to the edge's `to_state`
           * the edge's effect is executed best-effort (failures are logged only).
       - If no transition exists:
-          * a reflexive self-transition is assumed (stay in the current state, no effect).
+          * a fatal error is raised, because a validated state machine must provide
+            a transition for every advertised outcome.
       - After the transition, terminality is evaluated for the symbol-id; if terminal → reset.
       - On the error path, state is updated, terminality is evaluated, then the mapped exception
         is re-raised.
@@ -63,8 +64,8 @@ class AsyncTransitionScope:
         symbol = self._success if exc_type is None else self._error
         symbol_id = symbol.id  # stable over (type, ident, result)
 
-        # 1) Apply exact match OR reflexive self-transition (no-op)
-        self._apply_exact_or_self(symbol_id)
+        # 1) Apply exact transition or fail hard if none exists.
+        self._apply_exact_or_error(symbol_id)
 
         # 2) If the **new** current state is terminal for this symbol-id → reset
         if self._sm.is_terminal(symbol_id):
@@ -76,7 +77,9 @@ class AsyncTransitionScope:
 
         self._log_exc(
             "Exception during execution for symbol '%s/%s' in state '%s'",
-            symbol.type, symbol.ident, self._sm.current_state(),
+            symbol.kind,
+            symbol.ident,
+            self._sm.current_state(),
         )
         raise self._exc_mapper(exc or RuntimeError("Unknown failure")) from exc
 
@@ -84,25 +87,29 @@ class AsyncTransitionScope:
     # internals
     # ----------------------------
 
-    def _apply_exact_or_self(self, symbol_id: str) -> None:
+    def _apply_exact_or_error(self, symbol_id: str) -> None:
         """
-        Apply the exact transition for `symbol_id` from the current state if present;
-        otherwise perform a reflexive self-transition (stay in current state, no effect).
+        Apply the exact transition for `symbol_id` from the current state.
 
-        Self-transition semantics:
-          - If no edge is defined for (current_state, symbol_id), the current state
-            is preserved and no effect is executed.
-          - Terminality is still evaluated afterwards, which allows symbol-driven
-            resets even without an explicit edge.
+        This method assumes that the state machine was built and validated such
+        that a transition exists for every advertised input symbol. If no edge
+        can be found, this indicates a programming error or an inconsistency
+        between the builder/validator and the runtime transition graph.
+
+        In that case, a fatal error is raised instead of silently assuming a
+        reflexive self-transition.
         """
         edge = self._sm.get_edge(symbol_id)
         if edge is None:
             cur = self._sm.current_state()
-            logger.debug(
-                "Reflexive self-transition: staying in '%s' for symbol_id=%s",
-                cur, symbol_id,
+            msg = (
+                f"No transition defined for symbol_id={symbol_id!r} in state '{cur}'. "
+                "This must not happen for a validated state machine and indicates a "
+                "programming error or a mismatch between the builder/validator and "
+                "the runtime transition graph."
             )
-            return
+            logger.error(msg)
+            raise RuntimeError(msg)
 
         # Exact match: set next state, then best-effort effect
         self._sm.set_current_state(edge.to_state)
@@ -111,5 +118,8 @@ class AsyncTransitionScope:
         except Exception as e:  # synchronous invocation failures only
             logger.warning(
                 "Transition effect failed (from '%s' -> '%s', symbol_id=%s): %s",
-                edge.from_state, edge.to_state, symbol_id, e
+                edge.from_state,
+                edge.to_state,
+                symbol_id,
+                e,
             )

@@ -1,10 +1,8 @@
 from .builder import StateAPI, StateMachineDefinition, BaseTransitionAPI
 from .machine import (
     InputSymbol,
-    PromptResultType,
-    ResourceResultType,
     StateMachine,
-    ToolResultType,
+    ResultType,
 )
 from .prompts import StateAwarePromptManager
 from .resources import StateAwareResourceManager
@@ -13,8 +11,7 @@ from .tools import StateAwareToolManager
 
 __all__: list[str] = [
     "InputSymbol",
-    "PromptResultType",
-    "ResourceResultType",
+    "ResultType",
     "StateAPI",
     "StateAwarePromptManager",
     "StateAwareResourceManager",
@@ -22,6 +19,5 @@ __all__: list[str] = [
     "StateMachine",
     "StateMachineDefinition",
     "StatefulMCP",
-    "ToolResultType",
     "BaseTransitionAPI",
 ]

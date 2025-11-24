@@ -23,7 +23,6 @@ from mcp.server.state.machine.state_machine import StateMachine
 from mcp.server.state.prompts.state_aware_prompt_manager import StateAwarePromptManager
 from mcp.server.state.resources.state_aware_resource_manager import StateAwareResourceManager
 from mcp.server.state.tools.state_aware_tool_manager import StateAwareToolManager
-from mcp.server.state.transaction.manager import TransactionManager
 
 
 logger = get_logger(f"{__name__}.StatefulMCP")
@@ -59,12 +58,9 @@ class StatefulMCP(FastMCP[LifespanResultT]):
         # Parent initialization sets up _mcp_server and native managers
         super().__init__(*args, **kwargs)
 
-        # A global transaction manager for communication with the client
-        self._tx_manager: TransactionManager = TransactionManager()
-
         # Public DSL to define
         self._state_definition = StateMachineDefinition(
-            self._tool_manager, self._resource_manager, self._prompt_manager, self._tx_manager)
+            self._tool_manager, self._resource_manager, self._prompt_manager)
 
         # Session-scoped state machine runtime (built in run())
         self._state_machine: StateMachine | None = None
@@ -85,7 +81,7 @@ class StatefulMCP(FastMCP[LifespanResultT]):
 
         Declare states and edges; attach (tool|prompt|resource) bindings with **outcome-specific**
         edges. Use `on_success(...)` / `on_error(...)` to wire edges, optionally passing
-        `terminal=`, `effect=`, and/or `transaction=`. The server builds & validates the graph
+        `terminal=` and `effect=`. The server builds & validates the graph
         at startup—do not call internal build methods yourself.
 
         Decorator style::
@@ -153,7 +149,6 @@ class StatefulMCP(FastMCP[LifespanResultT]):
             self._stateful_tools = StateAwareToolManager(
                 state_machine=self._state_machine,
                 tool_manager=self._tool_manager,
-                tx_manager=self._tx_manager
             )
 
         if self._stateful_resources is None:
@@ -161,7 +156,6 @@ class StatefulMCP(FastMCP[LifespanResultT]):
             self._stateful_resources = StateAwareResourceManager(
                 state_machine=self._state_machine,
                 resource_manager=self._resource_manager,
-                tx_manager=self._tx_manager
             )
 
         if self._stateful_prompts is None:
@@ -169,7 +163,6 @@ class StatefulMCP(FastMCP[LifespanResultT]):
             self._stateful_prompts = StateAwarePromptManager(
                 state_machine=self._state_machine,
                 prompt_manager=self._prompt_manager,
-                tx_manager=self._tx_manager
             )
 
     # ----------------------------

@@ -19,32 +19,7 @@ Callback: TypeAlias = Callable[..., Awaitable[Any] | Any] | None
 # The resolver itself may be absent (None), e.g., when running in a global/non-session scope.
 ContextResolver: TypeAlias = Callable[[], Optional[FastMCPContext]] | None
 
-# Shared default qualifier used across all ResultType enums.
-DEFAULT_QUALIFIER = "default"
-
-
-class ToolResultType(str, Enum):
-    """Result type for tool executions: DEFAULT, SUCCESS, or ERROR."""
-    DEFAULT = DEFAULT_QUALIFIER
+class ResultType(str, Enum):
+    """Generic result type shared across tools, prompts, and resources."""
     SUCCESS = "success"
     ERROR = "error"
-
-
-class PromptResultType(str, Enum):
-    """Result type for prompt executions: DEFAULT, SUCCESS, or ERROR."""
-    DEFAULT = DEFAULT_QUALIFIER
-    SUCCESS = "success"
-    ERROR = "error"
-
-
-class ResourceResultType(str, Enum):
-    """Result type for resource executions: DEFAULT, SUCCESS, or ERROR."""
-    DEFAULT = DEFAULT_QUALIFIER
-    SUCCESS = "success"
-    ERROR = "error"
-
-
-# Generic alias across all result enums.
-# Useful for generic APIs (e.g., TransitionAPI[ResultType]) where
-# the concrete enum is fixed by the call site (tool/prompt/resource).
-ResultType: TypeAlias = ToolResultType | PromptResultType | ResourceResultType

@@ -173,11 +173,11 @@ class StateMachineValidator:
             if sym is None:
                 # Already reported as structural error above
                 continue
-            if sym.type == "tool":
+            if sym.kind == "tool":
                 tool_refs.add(sym.ident)
-            elif sym.type == "prompt":
+            elif sym.kind == "prompt":
                 prompt_refs.add(sym.ident)
-            elif sym.type == "resource":
+            elif sym.kind == "resource":
                 resource_refs.add(sym.ident)
 
         # Tools
@@ -299,6 +299,8 @@ class StateMachineValidator:
         # Build incoming map over available edges: target -> list[symbol_id]
         incoming: Dict[str, List[str]] = defaultdict(list)
         for e in self.edges:
+            if e.from_state == e.to_state:
+                continue  # ignore self-loops here
             sym = self.symbols_by_id.get(e.symbol_id)
             if sym is None or not self._is_symbol_available(sym, available):
                 continue
@@ -388,10 +390,10 @@ class StateMachineValidator:
     @staticmethod
     def _is_symbol_available(sym: InputSymbol, available: Dict[str, Set[str]]) -> bool:
         """Check artifact availability for a symbol."""
-        if sym.type == "tool":
+        if sym.kind == "tool":
             return sym.ident in available["tools"]
-        if sym.type == "prompt":
+        if sym.kind == "prompt":
             return sym.ident in available["prompts"]
-        if sym.type == "resource":
+        if sym.kind == "resource":
             return sym.ident in available["resources"]
         return False  # Unknown kinds are treated as unavailable

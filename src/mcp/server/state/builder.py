@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Callable, Optional, TypeVar, Generic, Literal, Dict, List
+from typing import Callable, Optional, TypeVar, Literal, Dict, List, Tuple
 
 from mcp.server.fastmcp.prompts import PromptManager
 from mcp.server.fastmcp.resources import ResourceManager
@@ -10,18 +10,11 @@ from mcp.server.state.machine.state_machine import (
     InputSymbol,
     State,
     StateMachine,
-    Edge, 
+    Edge,
 )
 
-from mcp.server.state.types import (
-    Callback,
-    PromptResultType,
-    ResourceResultType,
-    ToolResultType,
-)
+from mcp.server.state.types import Callback, ResultType
 from mcp.server.state.validator import StateMachineValidator, ValidationIssue
-from mcp.server.state.transaction.manager import TransactionManager, TxKey
-from mcp.server.state.transaction.types import TransactionPayloadProvider
 
 
 logger = get_logger(f"{__name__}.StateMachineBuilder")
@@ -30,8 +23,15 @@ logger = get_logger(f"{__name__}.StateMachineBuilder")
 # Helper Types
 # ----------------------------
 
-F  = TypeVar("F", bound=Callable[["StateAPI"], None])  # Decorator receives a StateAPI
-RT = TypeVar("RT", ToolResultType, PromptResultType, ResourceResultType)  # Result-type generic
+F = TypeVar("F", bound=Callable[["StateAPI"], None])  # Decorator receives a StateAPI
+
+ResultFactory = Callable[[str, ResultType], InputSymbol]
+
+RESULT_FACTORIES: Dict[str, ResultFactory] = {
+    "tool": InputSymbol.for_tool,
+    "prompt": InputSymbol.for_prompt,
+    "resource": InputSymbol.for_resource,
+}
 
 # ----------------------------
 # Internal Builder
@@ -40,8 +40,8 @@ RT = TypeVar("RT", ToolResultType, PromptResultType, ResourceResultType)  # Resu
 class _InternalStateMachineBuilder:
     """Private, build-only implementation.
 
-    Collects states and edges during DSL usage and produces state machine. 
-    Validation is invoked from build methods, never by users directly. 
+    Collects states and edges during DSL usage and produces a state machine.
+    Validation is invoked from build methods, never by users directly.
     This class must not be accessed from user code.
     """
 
@@ -50,14 +50,11 @@ class _InternalStateMachineBuilder:
         tool_manager: ToolManager,
         resource_manager: ResourceManager,
         prompt_manager: PromptManager,
-        tx_manager: TransactionManager | None,
     ):
-        """Capture external managers (for validation) and initialize buffers."""
-     
+        """Capture external managers for validation and initialize buffers."""
         self._tool_manager = tool_manager
         self._resource_manager = resource_manager
         self._prompt_manager = prompt_manager
-        self._tx_manager = tx_manager
 
         self._initial: Optional[str] = None
         self._states: Dict[str, State] = {}
@@ -65,10 +62,13 @@ class _InternalStateMachineBuilder:
         self._symbols_by_id: Dict[str, InputSymbol] = {}
 
     def add_state(self, name: str, *, is_initial: bool = False) -> None:
-        """Declare a state if missing; optionally mark as initial (first-wins; later attempts warn & are ignored)."""
+        """Declare a state if missing and optionally mark it as initial.
+
+        The first initial declaration wins. Later attempts log a warning and are ignored.
+        """
         exists = name in self._states
         if not exists:
-            # Create with empty terminal-symbol-id list (edges are global on the automaton).
+            # Create with empty terminal-symbol-id list. Edges are global on the automaton.
             self._states[name] = State(name=name, terminals=[])
         else:
             logger.debug("State '%s' already exists; keeping configuration.", name)
@@ -78,8 +78,9 @@ class _InternalStateMachineBuilder:
                 self._initial = name
             else:
                 logger.warning(
-                    "Initial state already set to '%s'; ignoring attempt to set '%s' as initial.",
-                    self._initial, name
+                    "Initial state already set to '%s'. Ignoring attempt to set '%s' as initial.",
+                    self._initial,
+                    name,
                 )
 
     def _record_symbol(self, symbol: InputSymbol) -> str:
@@ -89,14 +90,18 @@ class _InternalStateMachineBuilder:
         if existing is None:
             self._symbols_by_id[sid] = symbol
         else:
-            # same id -> same triple (type, ident, result) by Construct; 
-            # otherwise this would be a major programming error
-            if (existing.type, existing.ident, existing.result) != (symbol.type, symbol.ident, symbol.result):
-                logger.debug("Symbol id collision for %s; keeping first definition.", sid)
+            # Same id must mean the same triple (type, ident, result) by construction.
+            # If this differs, it is a programming error in the builder.
+            if (existing.kind, existing.ident, existing.result) != (
+                symbol.kind,
+                symbol.ident,
+                symbol.result,
+            ):
+                logger.debug("Symbol id collision for %s. Keeping first definition.", sid)
         return sid
 
     def add_terminal(self, state_name: str, symbol: InputSymbol) -> None:
-        """Append a terminal symbol-id to a state's terminal set (duplicates are ignored)."""
+        """Append a terminal symbol-id to a state's terminal set. Duplicates are ignored."""
         st = self._states.get(state_name)
         if st is None:
             raise KeyError(f"State '{state_name}' not defined")
@@ -104,7 +109,11 @@ class _InternalStateMachineBuilder:
         if sid not in st.terminals:
             st.terminals.append(sid)
         else:
-            logger.debug("Terminal symbol-id %s already present on state '%s'; ignored.", sid, state_name)
+            logger.debug(
+                "Terminal symbol-id %s already present on state '%s'. Ignored.",
+                sid,
+                state_name,
+            )
 
     def add_edge(
         self,
@@ -113,17 +122,19 @@ class _InternalStateMachineBuilder:
         symbol: InputSymbol,
         effect: Callback | None = None,
     ) -> None:
-        """Add an edge δ(q, a) = q'; ensure target exists; warn & ignore on duplicates/ambiguities.
+        """Add an edge δ(q, a) = q'.
 
         Behavior:
-        - Ensures the *target* state exists (no flags are modified for existing states).
-        - Duplicate (same symbol-id & same target from same source) → warn and ignore.
-        - Ambiguous (same symbol-id mapped to a different target from the same source) → warn and ignore.
+        - Ensures the target state exists. Flags of existing states are not modified.
+        - If a duplicate edge (same from_state, same symbol-id, same to_state) exists,
+          a warning is logged and the new edge is ignored.
+        - If an edge with the same from_state and symbol-id but a different to_state
+          exists, a warning about ambiguity is logged and the new edge is ignored.
         """
         if from_state not in self._states:
             raise KeyError(f"State '{from_state}' not defined")
 
-        # Ensure target state exists (placeholder if needed).
+        # Ensure target state exists as placeholder if needed.
         if to_state not in self._states:
             self.add_state(to_state, is_initial=False)
             logger.debug("Created placeholder state '%s' for edge target.", to_state)
@@ -131,37 +142,83 @@ class _InternalStateMachineBuilder:
         sid = self._record_symbol(symbol)
         new_edge = Edge(from_state=from_state, to_state=to_state, symbol_id=sid, effect=effect)
 
-        # duplicate?
-        if any(e.from_state == from_state and e.symbol_id == sid and e.to_state == to_state for e in self._edges):
-            logger.warning("Edge %r already exists; new definition ignored.", new_edge)
+        # Duplicate edge
+        if any(
+            e.from_state == from_state and e.symbol_id == sid and e.to_state == to_state
+            for e in self._edges
+        ):
+            logger.warning("Edge %r already exists. New definition ignored.", new_edge)
             return
 
-        # ambiguous?
-        if any(e.from_state == from_state and e.symbol_id == sid and e.to_state != to_state for e in self._edges):
+        # Ambiguous edge
+        if any(
+            e.from_state == from_state and e.symbol_id == sid and e.to_state != to_state
+            for e in self._edges
+        ):
             logger.warning(
-                "Ambiguous edge on symbol-id %s from '%s': existing target differs; new definition ignored.",
-                sid, from_state
+                "Ambiguous edge on symbol-id %s from '%s'. Existing target differs. New definition ignored.",
+                sid,
+                from_state,
             )
             return
 
         self._edges.append(new_edge)
 
-    def add_transaction(
-        self,
-        key: TxKey,
-        provider: TransactionPayloadProvider,
-    ) -> None:
-        """Register a payload provider for the given TxKey (multiple registrations allowed)."""
-        state_name = key[0]
-        if state_name not in self._states:
-            raise KeyError(f"State '{state_name}' not defined")
-        if self._tx_manager is not None:
-            self._tx_manager.register(key=key, provider=provider)
-            logger.debug("Registered transaction provider for key=%s", key)
+    def _complete_reflexive_edges(self) -> None:
+        """
+        Ensure reflexive completion for partially specified SUCCESS/ERROR edges.
+
+        For each binding (from_state, kind, ident) that already has at least one
+        edge in the graph, this method materializes missing outcomes as self-loops
+        (q, a, q). This implements the reflexive completion δ(q,a) = q for
+        unspecified outcomes at build time.
+        """
+        if not self._edges:
+            return
+
+        # (from_state, kind, ident) -> set of present ResultType values
+        present: Dict[Tuple[str, str, str], set[ResultType]] = {}
+
+        for e in self._edges:
+            sym = self._symbols_by_id.get(e.symbol_id)
+            if sym is None:
+                # Structural errors (unknown symbol-id) are reported by the validator.
+                continue
+
+            kind = sym.kind
+            if kind not in RESULT_FACTORIES:
+                raise ValueError(f"Unknown symbol kind '{kind}' for edge {e!r} during reflexive completion.")
+
+            key = (e.from_state, kind, sym.ident)
+            bucket = present.setdefault(key, set())
+            bucket.add(sym.result)
+
+        # For each binding, add missing outcomes as self-loops.
+        for (from_state, kind, ident), have_results in present.items():
+            factory = RESULT_FACTORIES[kind]
+            for result in ResultType:
+                if result in have_results:
+                    continue  # already specified for this outcome
+
+                symbol = factory(ident, result)
+                # Self-loop: from_state -> from_state, no effect.
+                self.add_edge(from_state, from_state, symbol, effect=None)
+                logger.warning(
+                    "Reflexive completion: added self-loop for %s '%s' in state '%s' on result '%s'.",
+                    kind,
+                    ident,
+                    from_state,
+                    result.value,
+                )
 
     def build(self) -> StateMachine:
-        """Build a global machine (single current state for the process)."""
+        """Build a global machine with a single current state for the process."""
+        # First ensure that every advertised artifact has a complete result space.
+        self._complete_reflexive_edges()
+
+        # Then run structural and reference validation.
         self._validate()
+
         initial = self._initial or next(iter(self._states))
         return StateMachine(
             initial_state=initial,
@@ -175,11 +232,11 @@ class _InternalStateMachineBuilder:
     # ----------------------------
 
     def _validate(self) -> None:
-        """Run structural and reference checks (errors abort; warnings are logged)."""
+        """Run structural and reference checks. Errors abort and warnings are logged."""
         issues: List[ValidationIssue] = StateMachineValidator(
             states=self._states,
-            edges=self._edges,                            
-            symbols_by_id=self._symbols_by_id,           
+            edges=self._edges,
+            symbols_by_id=self._symbols_by_id,
             initial_state=self._initial,
             tool_manager=self._tool_manager,
             prompt_manager=self._prompt_manager,
@@ -198,33 +255,24 @@ class _InternalStateMachineBuilder:
 # Public API DSL
 # ----------------------------
 
-class BaseTransitionAPI(Generic[RT]):
+class BaseTransitionAPI:
     """
     Fluent scope for transitions (internally *edges*) of a concrete (kind, name) binding within the current state.
 
     Outcome-first API:
-      - on_success(to_state, *, terminal=False, effect=None, transaction=None) -> Self
-      - on_error(to_state,   *, terminal=False, effect=None, transaction=None) -> Self
+      - on_success(to_state, *, terminal=False, effect=None) -> Self
+      - on_error(to_state,   *, terminal=False, effect=None) -> Self
       - build_edge() -> StateAPI  (return to state scope)
-
-    Transactions:
-      - A `transaction` is *prepared before* entering the transition scope or executing the op.
-      - If PREPARE fails: hard stop. No op execution. No transition emission.
-      - After execution, the transition scope emits an outcome (SUCCESS or ERROR).
-      - The matching outcome's transaction is **COMMIT**ted; the opposite outcome is **ABORT**ed.
-      - Transactions are registered per **(state, kind, name, outcome)**.
 
     Effects:
       - `effect` runs *after* the state update when this edge is taken.
       - Effects are non-semantic (logging/metrics/etc.); failures are warned and ignored.
 
-    Subclasses pin the SUCCESS/ERROR enums and the InputSymbol factory for their result type.
+    ResultType for SUCCESS/ERROR is implicitly mapped to on_success/on_error.
     """
 
     # subclass contract
-    _SUCCESS_ENUM: RT                               # e.g. ToolResultType.SUCCESS
-    _ERROR_ENUM: RT                                 # e.g. ToolResultType.ERROR
-    _factory: Callable[[str, RT], InputSymbol]      # e.g. InputSymbol.for_tool
+    _factory: Callable[[str, ResultType], InputSymbol]  # e.g. InputSymbol.for_tool
     _kind: Literal["tool", "prompt", "resource"]
 
     def __init__(self, builder: _InternalStateMachineBuilder, from_state: str, name: str):
@@ -239,16 +287,12 @@ class BaseTransitionAPI(Generic[RT]):
         *,
         terminal: bool = False,
         effect: Optional[Callback] = None,
-        transaction: Optional[TransactionPayloadProvider] = None,
-    ) -> BaseTransitionAPI[RT]:
-        """Attach the SUCCESS transition (edge); optionally mark target terminal & register a transaction."""
-        symbol = self._factory(self._name, self._SUCCESS_ENUM)
+    ) -> "BaseTransitionAPI":
+        """Attach the SUCCESS transition (edge); optionally mark target terminal."""
+        symbol = self._factory(self._name, ResultType.SUCCESS)
         self._builder.add_edge(self._from, to_state, symbol, effect)
         if terminal:
             self._builder.add_terminal(to_state, symbol)
-        if transaction is not None:
-            key: TxKey = (self._from, self._kind, self._name, "success")
-            self._builder.add_transaction(key, transaction)
         return self
 
     def on_error(
@@ -257,16 +301,12 @@ class BaseTransitionAPI(Generic[RT]):
         *,
         terminal: bool = False,
         effect: Optional[Callback] = None,
-        transaction: Optional[TransactionPayloadProvider] = None,
-    ) -> BaseTransitionAPI[RT]:
-        """Attach the ERROR transition (edge); optionally mark target terminal & register a transaction."""
-        symbol = self._factory(self._name, self._ERROR_ENUM)
+    ) -> "BaseTransitionAPI":
+        """Attach the ERROR transition (edge); optionally mark target terminal."""
+        symbol = self._factory(self._name, ResultType.ERROR)
         self._builder.add_edge(self._from, to_state, symbol, effect)
         if terminal:
             self._builder.add_terminal(to_state, symbol)
-        if transaction is not None:
-            key: TxKey = (self._from, self._kind, self._name, "error")
-            self._builder.add_transaction(key, transaction)
         return self
 
     def build_edge(self) -> "StateAPI":
@@ -274,36 +314,30 @@ class BaseTransitionAPI(Generic[RT]):
         return StateAPI(self._builder, self._from)
 
 
-class TransitionToolAPI(BaseTransitionAPI["ToolResultType"]):
+class TransitionToolAPI(BaseTransitionAPI):
     """Tool-typed transition scope. Use `on_success`, `on_error`, then `build_tool()` or `build_edge()` to return."""
-    _SUCCESS_ENUM = ToolResultType.SUCCESS
-    _ERROR_ENUM   = ToolResultType.ERROR
-    _factory      = staticmethod(InputSymbol.for_tool)
-    _kind         = "tool"
+    _factory        = staticmethod(InputSymbol.for_tool)
+    _kind           = "tool"
 
     def build_tool(self) -> "StateAPI":
         """Return to the state scope to continue attaching bindings for this state."""
         return self.build_edge()
 
 
-class TransitionPromptAPI(BaseTransitionAPI["PromptResultType"]):
+class TransitionPromptAPI(BaseTransitionAPI):
     """Prompt-typed transition scope. Use `on_success`, `on_error`, then `build_prompt()` or `build_edge()` to return."""
-    _SUCCESS_ENUM = PromptResultType.SUCCESS
-    _ERROR_ENUM   = PromptResultType.ERROR
-    _factory      = staticmethod(InputSymbol.for_prompt)
-    _kind         = "prompt"
+    _factory        = staticmethod(InputSymbol.for_prompt)
+    _kind           = "prompt"
 
     def build_prompt(self) -> "StateAPI":
         """Return to the state scope to continue attaching bindings for this state."""
         return self.build_edge()
 
 
-class TransitionResourceAPI(BaseTransitionAPI["ResourceResultType"]):
+class TransitionResourceAPI(BaseTransitionAPI):
     """Resource-typed transition scope. Use `on_success`, `on_error`, then `build_resource()` or `build_edge()` to return."""
-    _SUCCESS_ENUM = ResourceResultType.SUCCESS
-    _ERROR_ENUM   = ResourceResultType.ERROR
-    _factory      = staticmethod(InputSymbol.for_resource)
-    _kind         = "resource"
+    _factory        = staticmethod(InputSymbol.for_resource)
+    _kind           = "resource"
 
     def build_resource(self) -> "StateAPI":
         """Return to the state scope to continue attaching bindings for this state."""
@@ -376,10 +410,9 @@ class StateMachineDefinition:
         tool_manager: ToolManager,
         resource_manager: ResourceManager,
         prompt_manager: PromptManager,
-        tx_manager: TransactionManager | None,
     ):
         """Create a new facade over a fresh internal builder."""
-        self._builder = _InternalStateMachineBuilder(tool_manager, resource_manager, prompt_manager, tx_manager)
+        self._builder = _InternalStateMachineBuilder(tool_manager, resource_manager, prompt_manager)
 
     @classmethod
     def from_builder(cls, builder: _InternalStateMachineBuilder) -> "StateMachineDefinition":

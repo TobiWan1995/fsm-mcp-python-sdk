@@ -9,10 +9,8 @@ from mcp.server.fastmcp.resources import Resource, ResourceManager
 from mcp.server.fastmcp.utilities.logging import get_logger
 from mcp.server.lowlevel.helper_types import ReadResourceContents
 from mcp.server.state.helper.extract_session_id import extract_session_id
-from mcp.server.state.machine.state_machine import InputSymbol, StateMachine, SessionScope
-from mcp.server.state.types import FastMCPContext, ResourceResultType
-from mcp.server.state.transaction.async_transaction_scope import AsyncTransactionScope
-from mcp.server.state.transaction.manager import TransactionManager
+from mcp.server.state.machine.state_machine import StateMachine, SessionScope
+from mcp.server.state.types import FastMCPContext
 
 logger = get_logger(__name__)
 
@@ -35,8 +33,7 @@ class StateAwareResourceManager:
 
     Facade model (simplified):
     - Discovery via ``state_machine.available_symbols('resource')`` (URIs).
-    - Outer: `AsyncTransactionScope` prepares (state, "resource", uri, outcome). PREPARE failure → stop.
-    - Inner: `state_machine.step(...)` emits SUCCESS/ERROR around the read. Edge effects are best-effort.
+    - `state_machine.step(...)` emits SUCCESS/ERROR around the read. Edge effects are best-effort.
 
     Session model:
     - Session is ambient (ContextVar). We bind per call via ``SessionScope(_sid(ctx))``.
@@ -46,11 +43,9 @@ class StateAwareResourceManager:
         self,
         state_machine: StateMachine,
         resource_manager: ResourceManager,
-        tx_manager: TransactionManager,
     ):
         self._resource_manager = resource_manager
         self._state_machine = state_machine
-        self._tx_manager = tx_manager
 
     async def list_resources(self, ctx: Optional[FastMCPContext] = None) -> list[Resource]:
         """
@@ -101,21 +96,7 @@ class StateAwareResourceManager:
             if not resource:
                 raise ResourceError(f"Unknown resource: {uri}")
 
-            current_state = self._state_machine.current_state()
-
-            # OUTER: transactions (session-aware via ambient binding)
-            async with AsyncTransactionScope(
-                tx_manager=self._tx_manager,
-                state=current_state,
-                kind="resource",
-                name=uri_str,
-                ctx=ctx,
-            ):
-                # INNER: state step scope (effects can use ctx; scope does not rebind session)
-                async with self._state_machine.step(
-                    success_symbol=InputSymbol.for_resource(uri_str, ResourceResultType.SUCCESS),
-                    error_symbol=InputSymbol.for_resource(uri_str, ResourceResultType.ERROR),
-                    ctx=ctx,
-                ):
-                    content = await resource.read()
-                    return [ReadResourceContents(content=content, mime_type=resource.mime_type)]
+            # State step scope (effects can use ctx; scope does not rebind session)
+            async with self._state_machine.step(kind="resource", ident=uri_str, ctx=ctx):
+                content = await resource.read()
+                return [ReadResourceContents(content=content, mime_type=resource.mime_type)]

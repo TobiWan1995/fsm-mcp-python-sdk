@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional, Type
+from typing import Optional, Type, Literal
 
 import hashlib
 import threading
@@ -14,9 +14,7 @@ from mcp.server.state.machine.async_transition_scope import AsyncTransitionScope
 from mcp.server.state.types import (
     Callback,
     FastMCPContext,
-    PromptResultType,
-    ResourceResultType,
-    ToolResultType,
+    ResultType,
 )
 
 logger = get_logger(__name__)
@@ -28,50 +26,55 @@ logger = get_logger(__name__)
 @dataclass(frozen=True)
 class InputSymbol:
     """
-    Input alphabet letter: (type, ident, result) with a stable derived id.
+    Input alphabet letter: (kind, ident, result) with a stable derived id.
 
     Formal role (Σ):
-      - Symbols are triples (type, ident, result) and distinguish
+      - Symbols are triples (kind, ident, result) and distinguish
         tools/prompts/resources and their outcomes (SUCCESS/ERROR).
-      - `id` is a deterministic hash over (type, ident, result), used everywhere
+      - `id` is a deterministic hash over (kind, ident, result), used everywhere
         else in the runtime (edges, terminal sets) to avoid carrying full objects.
     """
-    type: str
+    kind: Literal["tool", "prompt", "resource"]
     ident: str
-    result: str
+    result: ResultType
     # Derived, stable identifier for reference from edges/states.
     id: str = field(init=False, compare=True)
 
     def __post_init__(self) -> None:
-        oid = self.make_id(self.type, self.ident, self.result)
+        oid = self.make_id(self.kind, self.ident, self.result)
         object.__setattr__(self, "id", oid)
 
     @staticmethod
-    def make_id(type_: str, ident: str, result: str) -> str:
+    def make_id(kind: str, ident: str, result: ResultType) -> str:
         """
-        Build a stable symbol id from (type, ident, result).
+        Build a stable symbol id from (kind, ident, result).
 
         The id is a namespaced SHA-1 over 'type\\x1fident\\x1fresult' to be:
           - deterministic across runs
           - compact and comparable as a string key
         """
-        payload = f"{type_}\x1f{ident}\x1f{result}".encode("utf-8")
+        payload = f"{kind}\x1f{ident}\x1f{result.value}".encode("utf-8")
         return hashlib.sha1(payload).hexdigest()
 
     @classmethod
-    def for_tool(cls, ident: str, result: ToolResultType) -> "InputSymbol":
+    def for_tool(cls, ident: str, result: ResultType) -> "InputSymbol":
         """Create a tool symbol with a type-safe result qualifier."""
-        return cls("tool", ident, result.value)
+        return cls("tool", ident, result)
 
     @classmethod
-    def for_prompt(cls, ident: str, result: PromptResultType) -> "InputSymbol":
+    def for_prompt(cls, ident: str, result: ResultType) -> "InputSymbol":
         """Create a prompt symbol with a type-safe result qualifier."""
-        return cls("prompt", ident, result.value)
+        return cls("prompt", ident, result)
 
     @classmethod
-    def for_resource(cls, ident: str, result: ResourceResultType) -> "InputSymbol":
+    def for_resource(cls, ident: str, result: ResultType) -> "InputSymbol":
         """Create a resource symbol with a type-safe result qualifier."""
-        return cls("resource", ident, result.value)
+        return cls("resource", ident, result)
+
+    @classmethod
+    def for_kind(cls, kind: Literal["tool", "prompt", "resource"], ident: str, result: ResultType) -> "InputSymbol":
+        """Create a symbol for the given kind."""
+        return cls(kind, ident, result)
 
 # ----------------------------------------------
 # δ edges
@@ -124,9 +127,9 @@ class StateMachine:
     Core runtime of the state machine and main API surface.
 
     Summary:
-      - Deterministic DFA over input triples (type, ident, result).
+      - Deterministic DFA over input triples (kind, ident, result).
       - Symbols are referenced at runtime via their stable ids.
-      - `step(success_symbol, error_symbol, ctx)` returns an `AsyncTransitionScope`
+      - `step(kind, ident, ctx)` returns an `AsyncTransitionScope`
         that acts as the step function.
       - Session-aware via an **ambient** session id (ContextVar). The async transition scope
         binds this ambient session from `ctx` for the duration of the step; if no session is
@@ -235,22 +238,23 @@ class StateMachine:
     def step(
         self,
         *,
-        success_symbol: "InputSymbol",
-        error_symbol: "InputSymbol",
+        kind: Literal["tool", "prompt", "resource"],
+        ident: str,
         ctx: Optional[FastMCPContext] = None,
     ) -> AsyncTransitionScope:
         """
         Create an async step scope bound to this machine.
 
         Contract:
-          - Callers pass the full input symbols (not only ids). Managers for tools/prompts/resources
-            construct them via the factory helpers (e.g. `InputSymbol.for_tool(...)`).
+          - Callers pass the binding `kind` and `ident` only; the scope builds SUCCESS/ERROR symbols internally.
           - The scope converts the symbols to their stable ids (`symbol.id`) and uses those ids
             for δ lookup and terminal checks.
           - Session scoping is **ambient**; this scope will bind a session id from `ctx` (if resolvable)
             for the duration of the step. If no session is present, the global state is used.
           - `ctx` is forwarded to edge effects.
         """
+        success_symbol = InputSymbol.for_kind(kind, ident, ResultType.SUCCESS)
+        error_symbol = InputSymbol.for_kind(kind, ident, ResultType.ERROR)
         return AsyncTransitionScope(
             self,
             success_symbol=success_symbol,
@@ -268,7 +272,7 @@ class StateMachine:
             if e.from_state != sname:
                 continue
             sym = self._symbols_by_id.get(e.symbol_id)
-            if sym and sym.type == kind:
+            if sym and sym.kind == kind:
                 idents.add(sym.ident)
         return idents
 
