@@ -146,10 +146,10 @@ class StateMachineValidator:
             "resources": set(),
         }
 
-        # 1) Remove unreachable states and edges that reference them
+        # Remove unreachable states and edges that reference them
         self._warn_and_prune_unreachable_states(self._reachable)
 
-        # 2) Prune outgoing edges for states with only terminal incoming (w.r.t. availability)
+        # Prune outgoing edges for states with only terminal incoming (w.r.t. availability)
         self._prune_terminal_only_incoming(available)
 
     # ----------------------------
@@ -211,9 +211,7 @@ class StateMachineValidator:
             for uri in unmatched:
                 uri_str = str(uri)
                 for tmpl in templates:
-                    # Important! matches returns a dict with no params to replace or None
-                    # If this returns only None if there are no parameters to replace this will break
-                    if tmpl.matches(uri_str) is not None:
+                    if tmpl.matches(uri_str):
                         resource_idents.add(uri_str)
                         break
 
