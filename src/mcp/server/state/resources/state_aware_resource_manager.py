@@ -5,7 +5,7 @@ from typing import Iterable, Optional
 from pydantic import AnyUrl
 
 from mcp.server.fastmcp.exceptions import ResourceError
-from mcp.server.fastmcp.resources import Resource, ResourceManager
+from mcp.server.fastmcp.resources import Resource, ResourceManager, FunctionResource
 from mcp.server.fastmcp.utilities.logging import get_logger
 from mcp.server.lowlevel.helper_types import ReadResourceContents
 from mcp.server.state.helper.extract_session_id import extract_session_id
@@ -49,33 +49,63 @@ class StateAwareResourceManager:
 
     async def list_resources(self, ctx: Optional[FastMCPContext] = None) -> list[Resource]:
         """
-        Return concrete resources allowed in the **current state**.
+        Return concrete resources allowed in the current state (names via ``available_symbols('resource')``).
 
-        The DFA only works with explicit resource URIs. During modeling, `on_resource(...)`
-        always registers concrete URIs, never templates. At runtime we therefore resolve
-        all allowed URIs via `ResourceManager.get_resource(...)`.
+        The DFA operates only on explicit resource URIs. We therefore resolve the allowed
+        URIs against the server's registered static resources first, then use resource
+        templates as a fallback.
 
-        This effectively *flattens* both static resources and resource templates into the
-        same concrete `Resource` representation: dynamic templates are instantiated by
-        `get_resource(...)` and exposed as ordinary resources. From the DFA's perspective,
-        there are no dynamic patterns, only explicit symbols.
-
-        Missing registrations are logged as warnings (soft), not raised.
+        Templates are flattened into plain Resource metadata so the DFA never sees dynamic
+        patterns. Missing registrations are logged as warnings.
         """
         with SessionScope(_sid(ctx)):
             allowed_uris = self._state_machine.available_symbols("resource")  # Set[str]
+
+            # Retrieve static resources first so they take precedence over templates.
+            static_resources = {
+                str(res.uri): res for res in self._resource_manager.list_resources()
+            }
+
+            # Retrieve all registered templates for template fallback.
+            templates = self._resource_manager.list_templates()
+
             out: list[Resource] = []
+
             for uri in allowed_uris:
-                res = await self._resource_manager.get_resource(uri)
-                if res is not None:
-                    out.append(res)
+                # Prefer a concrete resource if one is registered for this URI.
+                static_res = static_resources.get(uri)
+                if static_res is not None:
+                    out.append(static_res)
+                    continue
+
+                # Template fallback: find the first template whose URI pattern matches.
+                templated_res: Resource | None = None
+                for tmpl in templates:
+                    if tmpl.matches(uri) is not None:
+                        templated_res = FunctionResource(
+                            uri=AnyUrl(uri), 
+                            name=tmpl.name,
+                            title=tmpl.title,
+                            description=tmpl.description,
+                            mime_type=tmpl.mime_type,
+                            icons=tmpl.icons,
+                            annotations=tmpl.annotations,
+                            fn=tmpl.fn
+                        )
+                        break
+
+                if templated_res is not None:
+                    out.append(templated_res)
                 else:
                     logger.warning(
-                        "Resource '%s' expected in state '%s' but not registered.",
+                        "Resource '%s' expected in state '%s' but not registered "
+                        "as static resource or template.",
                         uri,
                         self._state_machine.current_state(),
                     )
+
             return out
+
 
     async def read_resource(
         self,
