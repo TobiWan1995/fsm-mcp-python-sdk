@@ -11,6 +11,7 @@ from mcp.types import (
     PromptArgument as MCPPromptArgument,
     Resource as MCPResource,
     Tool as MCPTool,
+    ResourceTemplate as MCPResourceTemplate
 )
 
 from mcp.server.fastmcp import FastMCP
@@ -266,3 +267,21 @@ class StatefulMCP(FastMCP[LifespanResultT]):
             )
             for prompt in prompts
         ]
+
+    # Special case for ResourceTemplates => violated DEA constraint (finite Σ)
+    async def list_resource_templates(self) -> list[MCPResourceTemplate]:
+        """
+        Override FastMCP.
+
+        Resource templates are not exposed by the DFA-based server. All resources
+        (including dynamic templates) are normalized into concrete resources and
+        surfaced via `list_resources` only.
+
+        Clients MUST use `list_resources` to discover resources. This handler
+        always fails to make the unsupported feature explicit.
+        """
+        raise RuntimeError(
+            "This server does not expose resource templates. "
+            "All resources (including dynamic templates) are flattened and "
+            "made available via `list_resources` only."
+        )

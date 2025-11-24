@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from collections import deque, defaultdict
 from dataclasses import dataclass
-from typing import Optional, Dict, Set, List, Tuple
+from typing import Dict, Set, List, Tuple, Optional
 
 from mcp.server.fastmcp.prompts import PromptManager
 from mcp.server.fastmcp.prompts.base import Prompt
 from mcp.server.fastmcp.resources import ResourceManager
 from mcp.server.fastmcp.resources.base import Resource
+from mcp.server.fastmcp.resources.templates import ResourceTemplate
 from mcp.server.fastmcp.tools import ToolManager
 from mcp.server.fastmcp.tools.base import Tool
 from mcp.server.fastmcp.utilities.logging import get_logger
@@ -26,7 +27,7 @@ class StateMachineValidator:
     """
     Validates the structure and references of a State Machine.
 
-    Architecture (updated):
+    Architecture:
       - Q (states): Dict[str, State] with `State.terminals: list[str]` of symbol-ids.
       - Σ (input symbols): provided as `symbols_by_id: Dict[id, InputSymbol]`.
       - δ (edges): global `List[Edge]` with (from_state, to_state, symbol_id).
@@ -35,6 +36,7 @@ class StateMachineValidator:
       - tool_manager.list_tools() -> list[Tool]
       - prompt_manager.list_prompts() -> list[Prompt]
       - resource_manager.list_resources() -> list[Resource]
+      - resource_manager.list_templates() -> list[ResourceTemplate]
 
     Validation checks performed:
 
@@ -65,17 +67,17 @@ class StateMachineValidator:
         edges: List[Edge],
         symbols_by_id: Dict[str, InputSymbol],
         initial_state: Optional[str],
-        tool_manager: ToolManager | None,
-        prompt_manager: PromptManager | None,
-        resource_manager: ResourceManager | None,
+        tool_manager: ToolManager,
+        prompt_manager: PromptManager,
+        resource_manager: ResourceManager,
     ) -> None:
         self.states: Dict[str, State] = states
         self.edges: List[Edge] = edges
         self.symbols_by_id: Dict[str, InputSymbol] = symbols_by_id
         self.initial_state: Optional[str] = initial_state
-        self.tool_manager: ToolManager | None = tool_manager
-        self.prompt_manager: PromptManager | None = prompt_manager
-        self.resource_manager: ResourceManager | None = resource_manager
+        self.tool_manager: ToolManager = tool_manager
+        self.prompt_manager: PromptManager = prompt_manager
+        self.resource_manager: ResourceManager = resource_manager
         self.issues: List[ValidationIssue] = []
 
         # cached across phases
@@ -111,17 +113,25 @@ class StateMachineValidator:
             return
 
         # Edge → Symbol existence
-        unknown_symbol_ids = sorted({e.symbol_id for e in self.edges if e.symbol_id not in self.symbols_by_id})
+        unknown_symbol_ids = sorted(
+            {e.symbol_id for e in self.edges if e.symbol_id not in self.symbols_by_id}
+        )
         for sid in unknown_symbol_ids:
-            self.issues.append(ValidationIssue("error", f"Edge references unknown symbol-id '{sid}'."))
+            self.issues.append(
+                ValidationIssue("error", f"Edge references unknown symbol-id '{sid}'.")
+            )
 
-        # Collect availability and reference errors/warnings
+        # Collect availability and reference errors
         self._available = self._collect_available_and_check_refs()
 
         # Reachability & terminal presence under availability constraints
-        self._reachable, self._has_reachable_terminal = self._compute_reachable_and_terminal_flag(self._available)
+        self._reachable, self._has_reachable_terminal = self._compute_reachable_and_terminal_flag(
+            self._available
+        )
         if not self._has_reachable_terminal:
-            self.issues.append(ValidationIssue("error", "No reachable terminal state from initial."))
+            self.issues.append(
+                ValidationIssue("error", "No reachable terminal state from initial.")
+            )
 
     # ----------------------------
     # post checks (cleanup/pruning)
@@ -130,7 +140,11 @@ class StateMachineValidator:
         """Perform cleanup: prune unreachable and terminal-only-incoming cases."""
         if not self.states:
             return
-        available = self._available or {"tools": set(), "prompts": set(), "resources": set()}
+        available = self._available or {
+            "tools": set(),
+            "prompts": set(),
+            "resources": set(),
+        }
 
         # 1) Remove unreachable states and edges that reference them
         self._warn_and_prune_unreachable_states(self._reachable)
@@ -143,14 +157,11 @@ class StateMachineValidator:
     # ----------------------------
     def _collect_available_and_check_refs(self) -> Dict[str, Set[str]]:
         """
-        Build sets of available artifact identifiers and record missing references as issues.
+        Build sets of available artifact identifiers and record missing references as errors.
 
-        Returns:
-          {
-            "tools": {tool_ident, ...},
-            "prompts": {prompt_ident, ...},
-            "resources": {resource_ident, ...},
-          }
+        Only artifacts that the underlying FastMCP managers can resolve are marked as
+        available. If an artifact is referenced in the automaton but not present in the
+        corresponding manager, a ValidationIssue with level="error" is recorded.
         """
         tool_refs: Set[str] = set()
         prompt_refs: Set[str] = set()
@@ -169,38 +180,51 @@ class StateMachineValidator:
             elif sym.type == "resource":
                 resource_refs.add(sym.ident)
 
-        tool_names: Set[str] = set()
-        try:
-            if self.tool_manager is None:
-                raise ValueError("No tool manager provided.")
-            tools: List[Tool] = self.tool_manager.list_tools()
-            tool_names = {t.name for t in tools}
-            for missing in sorted(tool_refs - tool_names):
-                self.issues.append(ValidationIssue("error", f"Referenced tool '{missing}' is not registered."))
-        except Exception as e:
-            self.issues.append(ValidationIssue("warning", f"Tool check skipped: {e}"))
+        # Tools
+        tools: List[Tool] = self.tool_manager.list_tools()
+        tool_names: Set[str] = {t.name for t in tools}
+        for missing in sorted(tool_refs - tool_names):
+            self.issues.append(
+                ValidationIssue("error", f"Referenced tool '{missing}' is not registered.")
+            )
 
-        prompt_names: Set[str] = set()
-        try:
-            if self.prompt_manager is None:
-                raise ValueError("No prompt manager provided.")
-            prompts: List[Prompt] = self.prompt_manager.list_prompts()
-            prompt_names = {p.name for p in prompts}
-            for missing in sorted(prompt_refs - prompt_names):
-                self.issues.append(ValidationIssue("error", f"Referenced prompt '{missing}' is not registered."))
-        except Exception as e:
-            self.issues.append(ValidationIssue("warning", f"Prompt check skipped: {e}"))
+        # Prompts
+        prompts: List[Prompt] = self.prompt_manager.list_prompts()
+        prompt_names: Set[str] = {p.name for p in prompts}
+        for missing in sorted(prompt_refs - prompt_names):
+            self.issues.append(
+                ValidationIssue("error", f"Referenced prompt '{missing}' is not registered.")
+            )
 
-        resource_idents: Set[str] = set()
-        try:
-            if self.resource_manager is None:
-                raise ValueError("No resource manager provided.")
-            resources: List[Resource] = self.resource_manager.list_resources()
-            resource_idents = {str(r.uri) for r in resources}
-            for missing in sorted(resource_refs - resource_idents):
-                self.issues.append(ValidationIssue("error", f"Referenced resource '{missing}' is not registered."))
-        except Exception as e:
-            self.issues.append(ValidationIssue("warning", f"Resource check skipped: {e}"))
+        # Resources
+        resources: List[Resource] = self.resource_manager.list_resources()
+        templates: List[ResourceTemplate] = self.resource_manager.list_templates()
+
+        # First, collect all concrete resource URIs
+        static_uris: Set[str] = {str(r.uri) for r in resources}
+        resource_idents: Set[str] = set(static_uris)
+
+        # Then, try to satisfy remaining refs via templates
+        unmatched = resource_refs - static_uris
+
+        # Design note: static resources are preferred over templates when
+        # determining availability. Templates are only consulted for URIs
+        # that do not exist as concrete resources.
+        if unmatched and templates:
+            for uri in unmatched:
+                uri_str = str(uri)
+                for tmpl in templates:
+                    if tmpl.matches(uri_str):
+                        resource_idents.add(uri_str)
+                        break
+
+        # Everything referenced but not in resource_idents is missing
+        for missing in sorted(resource_refs - resource_idents):
+            self.issues.append(
+                ValidationIssue(
+                    "error", f"Referenced resource '{missing}' is not registered."
+                )
+            )
 
         return {
             "tools": tool_names,
@@ -263,7 +287,7 @@ class StateMachineValidator:
 
         Implementation note:
         - We update `self.edges` **in place** (slice assignment) to preserve list identity
-            for callers holding a reference to the same list object.
+          for callers holding a reference to the same list object.
         """
         if not self.states or not self.edges:
             return
@@ -312,7 +336,7 @@ class StateMachineValidator:
             self.issues.append(
                 ValidationIssue(
                     "warning",
-                    f"Outgoing edges from state '{name}' pruned: only terminal incoming edges present."
+                    f"Outgoing edges from state '{name}' pruned: only terminal incoming edges present.",
                 )
             )
         if removed > 0:
@@ -335,7 +359,9 @@ class StateMachineValidator:
 
         for name in to_remove:
             self.issues.append(
-                ValidationIssue("warning", f"State '{name}' is unreachable from initial and was removed.")
+                ValidationIssue(
+                    "warning", f"State '{name}' is unreachable from initial and was removed."
+                )
             )
             del self.states[name]
 
@@ -343,11 +369,17 @@ class StateMachineValidator:
 
         # Filter global edges: drop any edge touching removed states
         before = len(self.edges)
-        self.edges = [e for e in self.edges if e.from_state not in removed_set and e.to_state not in removed_set]
+        self.edges = [
+            e
+            for e in self.edges
+            if e.from_state not in removed_set and e.to_state not in removed_set
+        ]
         pruned = before - len(self.edges)
         if pruned > 0:
             self.issues.append(
-                ValidationIssue("warning", f"Pruned {pruned} edges referencing removed states.")
+                ValidationIssue(
+                    "warning", f"Pruned {pruned} edges referencing removed states."
+                )
             )
 
     # ----------------------------

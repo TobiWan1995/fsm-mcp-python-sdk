@@ -53,7 +53,17 @@ class StateAwareResourceManager:
         self._tx_manager = tx_manager
 
     async def list_resources(self, ctx: Optional[FastMCPContext] = None) -> list[Resource]:
-        """Return resources allowed in the **current state** (URIs via ``available_symbols('resource')``).
+        """
+        Return concrete resources allowed in the **current state**.
+
+        The DFA only works with explicit resource URIs. During modeling, `on_resource(...)`
+        always registers concrete URIs, never templates. At runtime we therefore resolve
+        all allowed URIs via `ResourceManager.get_resource(...)`.
+
+        This effectively *flattens* both static resources and resource templates into the
+        same concrete `Resource` representation: dynamic templates are instantiated by
+        `get_resource(...)` and exposed as ordinary resources. From the DFA's perspective,
+        there are no dynamic patterns, only explicit symbols.
 
         Missing registrations are logged as warnings (soft), not raised.
         """

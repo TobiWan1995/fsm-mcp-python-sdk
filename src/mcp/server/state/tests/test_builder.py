@@ -8,6 +8,19 @@ from mcp.server.state.builder import _InternalStateMachineBuilder
 from mcp.server.state.machine.state_machine import InputSymbol
 from mcp.server.state.types import ToolResultType
 from mcp.server.state.transaction.manager import TransactionManager
+from mcp.server.fastmcp.tools import ToolManager
+from mcp.server.fastmcp.resources import ResourceManager
+from mcp.server.fastmcp.prompts import PromptManager
+
+
+def make_builder() -> _InternalStateMachineBuilder:
+    """Construct an internal builder with real FastMCP managers."""
+    return _InternalStateMachineBuilder(
+        tool_manager=ToolManager(),
+        resource_manager=ResourceManager(),
+        prompt_manager=PromptManager(),
+        tx_manager=TransactionManager(),
+    )
 
 
 def test_builder_warns_on_second_initial_state(caplog: LogCaptureFixture) -> None:
@@ -15,9 +28,7 @@ def test_builder_warns_on_second_initial_state(caplog: LogCaptureFixture) -> Non
     Defining a second initial state does NOT raise; it logs a WARNING and keeps
     the first initial unchanged.
     """
-    b = _InternalStateMachineBuilder(
-        tool_manager=None, resource_manager=None, prompt_manager=None, tx_manager=TransactionManager()
-    )
+    b = make_builder()
 
     # First initial is accepted
     b.add_state("s0", is_initial=True)
@@ -35,9 +46,7 @@ def test_define_state_does_not_clear_edges(caplog: LogCaptureFixture) -> None:
     Calling add_state() again for an existing state does not replace config or clear edges.
     A DEBUG log should mention that the definition is ignored.
     """
-    b = _InternalStateMachineBuilder(
-        tool_manager=None, resource_manager=None, prompt_manager=None, tx_manager=TransactionManager()
-    )
+    b = make_builder()
 
     b.add_state("s0", is_initial=True)
     b.add_state("s1")
@@ -55,16 +64,17 @@ def test_define_state_does_not_clear_edges(caplog: LogCaptureFixture) -> None:
 
     edges_from_s0_after = [e for e in b._edges if e.from_state == "s0"]
     assert len(edges_from_s0_after) == 1
-    assert any("State 's0' already exists; keeping configuration." in rec.message for rec in caplog.records)
+    assert any(
+        "State 's0' already exists; keeping configuration." in rec.message
+        for rec in caplog.records
+    )
 
 
 def test_add_terminal_marks_target_state() -> None:
     """
     add_terminal(to_state, symbol) marks that state's terminal symbol set.
     """
-    b = _InternalStateMachineBuilder(
-        tool_manager=None, resource_manager=None, prompt_manager=None, tx_manager=TransactionManager()
-    )
+    b = make_builder()
     b.add_state("s0", is_initial=True)
     b.add_state("s1")
 
@@ -80,9 +90,7 @@ def test_builder_duplicate_edge_warns_and_is_ignored(caplog: LogCaptureFixture) 
     """
     add_edge(): adding the exact same edge twice should warn and ignore the duplicate.
     """
-    b = _InternalStateMachineBuilder(
-        tool_manager=None, resource_manager=None, prompt_manager=None, tx_manager=TransactionManager()
-    )
+    b = make_builder()
     b.add_state("s0")
     b.add_state("s1")
 
@@ -96,7 +104,10 @@ def test_builder_duplicate_edge_warns_and_is_ignored(caplog: LogCaptureFixture) 
     matching = [e for e in b._edges if e.from_state == "s0" and e.symbol_id == sym.id]
     assert len(matching) == 1
     assert matching[0].to_state == "s1"
-    assert any("already exists" in rec.message and "ignored" in rec.message for rec in caplog.records)
+    assert any(
+        "already exists" in rec.message and "ignored" in rec.message
+        for rec in caplog.records
+    )
 
 
 def test_builder_ambiguous_edge_warns_and_is_ignored(caplog: LogCaptureFixture) -> None:
@@ -104,9 +115,7 @@ def test_builder_ambiguous_edge_warns_and_is_ignored(caplog: LogCaptureFixture) 
     add_edge(): mapping the same symbol to a different target from the same source
     should warn about ambiguity and ignore the new edge.
     """
-    b = _InternalStateMachineBuilder(
-        tool_manager=None, resource_manager=None, prompt_manager=None, tx_manager=TransactionManager()
-    )
+    b = make_builder()
     b.add_state("s0")
     b.add_state("s1")
     b.add_state("s2")

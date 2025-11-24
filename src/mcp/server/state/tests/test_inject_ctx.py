@@ -7,9 +7,7 @@ import pytest
 from pytest import LogCaptureFixture
 
 from mcp.server.fastmcp.server import Context
-from mcp.server.state.machine.state_machine import InputSymbol
 from mcp.server.state.server import StatefulMCP
-from mcp.server.state.types import ToolResultType
 
 
 @pytest.mark.anyio

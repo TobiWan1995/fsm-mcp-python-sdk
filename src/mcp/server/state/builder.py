@@ -47,9 +47,9 @@ class _InternalStateMachineBuilder:
 
     def __init__(
         self,
-        tool_manager: ToolManager | None,
-        resource_manager: ResourceManager | None,
-        prompt_manager: PromptManager | None,
+        tool_manager: ToolManager,
+        resource_manager: ResourceManager,
+        prompt_manager: PromptManager,
         tx_manager: TransactionManager | None,
     ):
         """Capture external managers (for validation) and initialize buffers."""
@@ -373,9 +373,9 @@ class StateMachineDefinition:
 
     def __init__(
         self,
-        tool_manager: ToolManager | None,
-        resource_manager: ResourceManager | None,
-        prompt_manager: PromptManager | None,
+        tool_manager: ToolManager,
+        resource_manager: ResourceManager,
+        prompt_manager: PromptManager,
         tx_manager: TransactionManager | None,
     ):
         """Create a new facade over a fresh internal builder."""
