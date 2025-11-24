@@ -206,7 +206,7 @@ class StatefulMCP(FastMCP[LifespanResultT]):
         session-scoped state machine for the *current state* of the *current session*.
         """
         assert self._stateful_tools is not None, "Stateful managers not initialized; call run() first"
-        tools = self._stateful_tools.list_tools()
+        tools = self._stateful_tools.list_tools(self.get_context())
         return [
             MCPTool(
                 name=tool.name,
@@ -227,7 +227,7 @@ class StatefulMCP(FastMCP[LifespanResultT]):
         the session-scoped state machine for the *current state* of the *current session*.
         """
         assert self._stateful_resources is not None, "Stateful managers not initialized; call run() first"
-        resources = await self._stateful_resources.list_resources()
+        resources = await self._stateful_resources.list_resources(self.get_context())
         return [
             MCPResource(
                 uri=resource.uri,
@@ -247,7 +247,7 @@ class StatefulMCP(FastMCP[LifespanResultT]):
         the session-scoped state machine for the *current state* of the *current session*.
         """
         assert self._stateful_prompts is not None, "Stateful managers not initialized; call run() first"
-        prompts = self._stateful_prompts.list_prompts()
+        prompts = self._stateful_prompts.list_prompts(self.get_context())
         return [
             MCPPrompt(
                 name=prompt.name,
