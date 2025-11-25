@@ -83,7 +83,7 @@ class StateAwareResourceManager:
                 for tmpl in templates:
                     if tmpl.matches(uri) is not None:
                         templated_res = FunctionResource(
-                            uri=AnyUrl(tmpl.uri_template), 
+                            uri=AnyUrl(uri), 
                             name=tmpl.name,
                             title=tmpl.title,
                             description=tmpl.description,
