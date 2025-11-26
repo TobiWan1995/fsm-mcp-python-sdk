@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from typing import Optional, Awaitable, Any
+from typing import Optional, Any
 
 from mcp.server.state.types import Callback, FastMCPContext
 from mcp.server.state.helper.inject_ctx import inject_context
@@ -11,49 +11,47 @@ from mcp.server.fastmcp.utilities.logging import get_logger
 logger = get_logger(__name__)
 
 
-async def _runner(awaitable: Awaitable[Any]) -> None:
-    """Await the awaitable and log any exception; used to satisfy create_task's coroutine type."""
-    try:
-        await awaitable
-    except asyncio.CancelledError:
-        # Silent: cancellation is a normal shutdown path.
-        pass
-    except Exception as exc:
-        logger.warning("Async callback raised: %s", exc)
-
-
-def _schedule_fire_and_forget(awaitable: Awaitable[Any]) -> None:
-    """
-    Schedule the given awaitable as a Task in the current loop.
-    Uses a coroutine wrapper so typeshed's create_task(Coroutine) signature is satisfied.
-    """
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        logger.warning("No running event loop; dropping async callback result.")
-        return
-
-    loop.create_task(_runner(awaitable))
-
-
-def apply_callback_with_context(
+async def apply_callback_with_context(
     callback: Optional[Callback],
     ctx: Optional[FastMCPContext],
 ) -> None:
     """
-    Apply callback if present. Result is ignored.
-    Context is always passed to `inject_context` (it can handle None).
-    Async callbacks are scheduled fire-and-forget.
+    Apply callback if present.
+
+    - Context is always passed via `inject_context` (which handles None).
+    - If the callback returns an awaitable, it is awaited.
+    - Any exceptions are caught and logged (with stacktrace).
+    - If the callback returns a non-None result, it is logged and then ignored.
     """
     if not callable(callback):
         return
 
-    logger.debug(
-        "Executing callback function '%s'.",
-        getattr(callback, "__name__", repr(callback))
-    )
+    callback_name = getattr(callback, "__name__", repr(callback))
+    logger.debug("Executing callback function '%s'.", callback_name)
 
-    result: Any = inject_context(callback, ctx)
+    try:
+        # May return a plain value or an awaitable
+        result: Any = inject_context(callback, ctx)
 
-    if inspect.isawaitable(result):
-        _schedule_fire_and_forget(result)
+        if inspect.isawaitable(result):
+            result = await result
+
+        if result is not None:
+            # Result is intentionally ignored; we just log it if we can.
+            logger.info(
+                "Callback '%s' produced result (ignored): %r",
+                callback_name,
+                result,
+            )
+
+    except asyncio.CancelledError:
+        # Cancellation is usually part of normal shutdown.
+        logger.debug("Callback '%s' was cancelled.", callback_name)
+    except Exception as exc:
+        # We swallow the error but log it (with traceback) for debugging.
+        logger.warning(
+            "Callback '%s' raised an exception: %s",
+            callback_name,
+            exc,
+            exc_info=True,
+        )
