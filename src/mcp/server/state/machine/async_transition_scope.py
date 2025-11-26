@@ -65,7 +65,7 @@ class AsyncTransitionScope:
         symbol_id = symbol.id  # stable over (type, ident, result)
 
         # 1) Apply exact transition or fail hard if none exists.
-        self._apply_exact_or_error(symbol_id)
+        await self._apply_exact_or_error(symbol_id)
 
         # 2) If the **new** current state is terminal for this symbol-id → reset
         if self._sm.is_terminal(symbol_id):
@@ -87,7 +87,7 @@ class AsyncTransitionScope:
     # internals
     # ----------------------------
 
-    def _apply_exact_or_error(self, symbol_id: str) -> None:
+    async def _apply_exact_or_error(self, symbol_id: str) -> None:
         """
         Apply the exact transition for `symbol_id` from the current state.
 
@@ -114,7 +114,7 @@ class AsyncTransitionScope:
         # Exact match: set next state, then best-effort effect
         self._sm.set_current_state(edge.to_state)
         try:
-            apply_callback_with_context(edge.effect, self._ctx)
+            await apply_callback_with_context(edge.effect, self._ctx)
         except Exception as e:  # synchronous invocation failures only
             logger.warning(
                 "Transition effect failed (from '%s' -> '%s', symbol_id=%s): %s",
