@@ -64,7 +64,7 @@ def test_validation_warns_and_prunes_unreachable_edges(caplog: LogCaptureFixture
     assert app._state_machine is not None
     m = app._state_machine
     m.set_current_state("s1")
-    assert m.available_symbols("tool") == set()
+    assert not m.get_symbols("tool")
 
 
 def test_validation_error_no_reachable_terminal() -> None:
@@ -216,4 +216,5 @@ def test_validation_accepts_templated_resource() -> None:
     m.set_current_state("s0")
 
     # The instantiated resource URI should be available in the resource symbols
-    assert "greeting://alice" in m.available_symbols("resource")
+    symbols = m.get_symbols("resource")
+    assert any(s.ident == "greeting://alice" for s in symbols)

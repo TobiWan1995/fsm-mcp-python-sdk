@@ -12,7 +12,7 @@ if TYPE_CHECKING:  # pragma: no cover
 logger = get_logger(__name__)
 
 
-class AsyncTransitionScope:
+class TransitionScope:
     """
     Async context manager that wraps an operation and emits SUCCESS/ERROR transitions.
 
@@ -27,7 +27,7 @@ class AsyncTransitionScope:
           * the state is updated to the edge's `to_state`
           * the edge's effect is executed best-effort (failures are logged only).
       - If no transition exists:
-          * a fatal error is raised, because a validated state machine must provide
+          * an error is logged, because a validated state machine must provide
             a transition for every advertised outcome.
       - After the transition, terminality is evaluated for the symbol-id; if terminal → reset.
       - On the error path, state is updated, terminality is evaluated, then the mapped exception
@@ -51,7 +51,7 @@ class AsyncTransitionScope:
         self._log_exc = log_exc
         self._exc_mapper = exc_mapper
 
-    async def __aenter__(self) -> "AsyncTransitionScope":
+    async def __aenter__(self) -> "TransitionScope":
         return self
 
     async def __aexit__(
@@ -65,7 +65,7 @@ class AsyncTransitionScope:
         symbol_id = symbol.id  # stable over (type, ident, result)
 
         # 1) Apply exact transition or fail hard if none exists.
-        await self._apply_exact_or_error(symbol_id)
+        await self._apply(symbol_id)
 
         # 2) If the **new** current state is terminal for this symbol-id → reset
         if self._sm.is_terminal(symbol_id):
@@ -87,7 +87,7 @@ class AsyncTransitionScope:
     # internals
     # ----------------------------
 
-    async def _apply_exact_or_error(self, symbol_id: str) -> None:
+    async def _apply(self, symbol_id: str) -> None:
         """
         Apply the exact transition for `symbol_id` from the current state.
 
@@ -109,17 +109,16 @@ class AsyncTransitionScope:
                 "the runtime transition graph."
             )
             logger.error(msg)
-            raise RuntimeError(msg)
-
-        # Exact match: set next state, then best-effort effect
-        self._sm.set_current_state(edge.to_state)
-        try:
-            await apply_callback_with_context(edge.effect, self._ctx)
-        except Exception as e:  # synchronous invocation failures only
-            logger.warning(
-                "Transition effect failed (from '%s' -> '%s', symbol_id=%s): %s",
-                edge.from_state,
-                edge.to_state,
-                symbol_id,
-                e,
-            )
+        else:
+            # Exact match: set next state, then best-effort effect
+            self._sm.set_current_state(edge.to_state)
+            try:
+                await apply_callback_with_context(edge.effect, self._ctx)
+            except Exception as e:  # synchronous invocation failures only
+                logger.warning(
+                    "Transition effect failed (from '%s' -> '%s', symbol_id=%s): %s",
+                    edge.from_state,
+                    edge.to_state,
+                    symbol_id,
+                    e,
+                )

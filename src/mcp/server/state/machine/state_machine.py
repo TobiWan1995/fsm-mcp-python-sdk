@@ -10,7 +10,7 @@ from contextvars import ContextVar, Token
 from types import TracebackType
 
 from mcp.server.fastmcp.utilities.logging import get_logger
-from mcp.server.state.machine.async_transition_scope import AsyncTransitionScope
+from mcp.server.state.machine.transition_scope import TransitionScope
 from mcp.server.state.types import (
     Callback,
     FastMCPContext,
@@ -215,7 +215,7 @@ class StateMachine:
         Return the (unique) δ-edge applicable from the *current* state on `symbol_id`.
 
         Lookup strategy:
-          - Read current state (ambient session aware).
+          - Read current state.
           - Scan global δ and select the edge with matching (from_state, symbol_id).
           - Return None if not found.
         """
@@ -241,39 +241,40 @@ class StateMachine:
         kind: Literal["tool", "prompt", "resource"],
         ident: str,
         ctx: Optional[FastMCPContext] = None,
-    ) -> AsyncTransitionScope:
+    ) -> TransitionScope:
         """
-        Create an async step scope bound to this machine.
+        Create an async transition scope bound to this machine.
 
-        Contract:
-          - Callers pass the binding `kind` and `ident` only; the scope builds SUCCESS/ERROR symbols internally.
-          - The scope converts the symbols to their stable ids (`symbol.id`) and uses those ids
-            for δ lookup and terminal checks.
-          - Session scoping is **ambient**; this scope will bind a session id from `ctx` (if resolvable)
-            for the duration of the step. If no session is present, the global state is used.
-          - `ctx` is forwarded to edge effects.
+        Contract
+          - Callers pass the binding `kind` and `ident` only. The scope constructs
+            the corresponding SUCCESS and ERROR symbols internally.
+          - The scope maps these symbols to look up the exact δ transition from the current state,
+            and set the new target state.
+          - If the emitted symbol is terminal in the resulting state, the machine
+            is reset to its initial state.
+          - `ctx` is forwarded to transition effects.
         """
         success_symbol = InputSymbol.for_kind(kind, ident, ResultType.SUCCESS)
         error_symbol = InputSymbol.for_kind(kind, ident, ResultType.ERROR)
-        return AsyncTransitionScope(
+        return TransitionScope(
             self,
             success_symbol=success_symbol,
             error_symbol=error_symbol,
             ctx=ctx,
         )
 
-    def available_symbols(self, kind: str) -> set[str]:
+    def get_symbols(self, kind: str) -> list["InputSymbol"]:
         """
-        Return the set of *idents* available from the current state for the given kind.
+        Return all input symbols Σ that are available from the current state
+        for the given `kind`.
 
-        Only bindings whose result space is complete (SUCCESS and ERROR) are considered
-        available. If a partial binding is encountered, this indicates an inconsistent
-        state machine definition and a ValueError is raised.
+        For every edge originating in the current state whose symbol matches
+        the given kind, the backing InputSymbol is returned. Bindings for
+        SUCCESS and ERROR therefore appear as separate symbols. No validation
+        of the result space is performed here.
         """
         sname = self.current_state()
-
-        # (ident) -> set of observed ResultType values (SUCCESS/ERROR) in this state
-        results_by_ident: dict[str, set[ResultType]] = {}
+        symbols: list["InputSymbol"] = []
 
         for e in self._edges:
             if e.from_state != sname:
@@ -283,22 +284,9 @@ class StateMachine:
             if sym is None or sym.kind != kind:
                 continue
 
-            bucket = results_by_ident.setdefault(sym.ident, set())
-            bucket.add(sym.result)
+            symbols.append(sym)
 
-        available: set[str] = set()
-
-        for ident, results in results_by_ident.items():
-            if ResultType.SUCCESS in results and ResultType.ERROR in results:
-                available.add(ident)
-            else:
-                raise ValueError(
-                    "Inconsistent state machine: binding "
-                    f"'{kind}/{ident}' in state '{sname}' does not define "
-                    "a complete result space (SUCCESS and ERROR)."
-                )
-
-        return available
+        return symbols
 
 
 # ----------------------------------------------
