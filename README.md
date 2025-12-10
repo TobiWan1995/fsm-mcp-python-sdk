@@ -168,5 +168,5 @@ if __name__ == "__main__":
 ## Further Resources
 
   * **Examples (Server-Side):** For complex scenarios demonstrating the interaction between Lifespan Context and the State Machine, please visit the [fsm-mcp-examples](https://github.com/TobiWan1995/fsm-mcp-examples) repository.
-  * **Client Reference:** An example client implementation that handles state change notifications can be found in the [fsm-mcp-client](https://github.com/TobiWan1995/fsm-mcp-client) repository.
+  * **Client Reference:** An example client implementation that handles state change notifications can be found in the [fsm-mcp-client](https://github.com/TobiWan1995/fsm-mcp-python-client) repository.
   * **Standard SDK:** For standard use cases without state machine logic, please use the official [mcp-python-sdk](https://github.com/modelcontextprotocol/python-sdk).
