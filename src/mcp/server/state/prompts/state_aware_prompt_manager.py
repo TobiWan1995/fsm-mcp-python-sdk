@@ -55,7 +55,7 @@ class StateAwarePromptManager:
         if not matching:
             raise ValueError(
                 f"Prompt '{name}' is not allowed in state '{state_name}'. "
-                "Use list_prompts() to inspect availability."
+                "Use the method prompts/list to inspect availability."
             )
 
         # 2) Check completeness of the result space.

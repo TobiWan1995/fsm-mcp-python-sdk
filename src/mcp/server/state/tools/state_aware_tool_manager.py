@@ -54,7 +54,7 @@ class StateAwareToolManager:
         if not matching:
             raise ValueError(
                 f"Tool '{name}' is not allowed in state '{state_name}'. "
-                "Use list_tools() to inspect availability."
+                "Use the method tools/list to inspect availability."
             )
 
         # Check completeness of the result space

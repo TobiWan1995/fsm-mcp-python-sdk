@@ -56,7 +56,7 @@ class StateAwareResourceManager:
         if not matching:
             raise ResourceError(
                 f"Resource '{uri}' is not allowed in state '{state_name}'. "
-                "Use list_resources() to inspect availability."
+                "Use the method resources/list to inspect availability."
             )
 
         # 2) Check completeness of the result space.
